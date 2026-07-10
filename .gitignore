@@ -1,0 +1,10 @@
+# Managed package checkouts live as top-level subdirectories (oxen-mq,
+# oxen-encoding, session-router, ...). They are clones, not submodules, and are
+# never committed here. Ignore all subdirectories; tracked content is top-level
+# files only.
+/*/
+
+# Editor / OS noise
+*~
+*.swp
+.DS_Store

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# deb-rebuild — no-change rebuild bump across active distro branches (e.g. to
+# relink against a new system library soname). No source or packaging change: it
+# just bumps the version and adds a changelog entry so CI rebuilds and produces a
+# package apt sees as newer.
+#
+# Usage: ./deb-rebuild <repo> [-m "<message>"] [--only <glob>[,…]]...
+#
+#   <repo>         managed checkout directory (e.g. liboxenmq)
+#   -m MSG         changelog/commit message (default: "Rebuild")
+#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/forky
+#                  or 'debian/*'). Repeatable and comma-separated.
+#
+# Version: a full run bumps the debian revision (<upstream>-<N+1><suffix>); an
+# --only run appends/increments a +M (<version>+M) and leaves -N alone, so
+# rebuilding only some distros doesn't break distro-upgrade ordering. No push
+# (use deb-push).
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+INVOCATION="$0 $*"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+
+begin_or_resume rebuild
+
+if [ "$RESUMING" = 0 ]; then
+    COMMIT_MSG="Rebuild"
+    only_globs=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
+            -m*) COMMIT_MSG="${1#-m}" ;;
+            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; IFS=, read -ra _g <<< "$1"; only_globs+=("${_g[@]}") ;;
+            --only=*) IFS=, read -ra _g <<< "${1#--only=}"; only_globs+=("${_g[@]}") ;;
+            -h|--help) usage 0 ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+        shift
+    done
+
+    require_clean_tree
+    msg "Fetching origin..."
+    git fetch -q origin
+
+    # --only: restrict to matching branches and use a +M bump (leaves -N intact).
+    if [ "${#only_globs[@]}" -gt 0 ]; then
+        PARTIAL=1
+        hits=""
+        for g in "${only_globs[@]}"; do
+            m=""
+            for b in "${distros[@]}"; do case "$b" in $g) m+=" $b" ;; esac; done
+            [ -n "$m" ] || die "no active branch matches '$g'"
+            hits+="$m"
+        done
+        TARGET="$(printf '%s\n' $hits | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+    fi
+
+    require_branches
+
+    if [ "${PARTIAL:-0}" = 1 ]; then
+        msg "Rebuild (--only) $(cpkg "$TARGET"): +M bump — $COMMIT_MSG"
+    else
+        cur="$(changelog_version "$(branch_ref debian/sid)")"
+        VERSION_BASE="$(bump_revision "$cur")"
+        msg "Rebuild: $cur -> $VERSION_BASE — $COMMIT_MSG"
+    fi
+
+    save_state "" ""
+fi
+
+# A rebuild has no conflict-prone steps (no merge/cherry-pick), so each branch is
+# handled atomically: bump the changelog, regenerate control, commit.
+proc_rebuild() {
+    local b="$1" ver dist
+    checkout_uptodate "$b"
+    ver="$(next_version "$b")"
+    dist="$(changelog_dist "$b")"
+    msg "  $(cver "$ver") ($dist)"
+    filter_dch dch --newversion "$ver" --distribution "$dist" \
+        --force-distribution --force-bad-version "$COMMIT_MSG"
+    regen_control
+    git add debian/changelog debian/control
+    git commit -q -m "$COMMIT_MSG"
+}
+
+run_multibranch proc_rebuild
+push_hint

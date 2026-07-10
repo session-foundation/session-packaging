@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+#
+# deb-pkg-update — propagate a debian/ packaging change (already committed on
+# debian/sid) to all active distro branches, with a debian-revision (-N) bump.
+#
+# Usage: ./deb-pkg-update <repo> [<commit>...] -m "<message>"
+#
+#   <repo>      managed checkout directory (e.g. oxen-mq)
+#   <commit>    packaging commit(s) on debian/sid to propagate. If omitted they
+#               are auto-detected (sid commits since the last changelog entry that
+#               touch something other than debian/changelog|control); when more
+#               than one is found you are asked to confirm.
+#   -m MSG      changelog/commit message (required)
+#
+# Workflow: first make + commit your packaging change on debian/sid yourself,
+# then run this. It bumps sid's changelog, then for every other branch it
+# cherry-picks the packaging commit(s) and bumps that branch's changelog. It does
+# NOT push (use deb-push). Cherry-pick conflicts stop with resume instructions.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+INVOCATION="$0 $*"
+
+# Auto-detect packaging commits on the (checked-out) debian/sid branch: commits
+# since the last changelog entry that change more than just changelog/control.
+detect_pkg_commits() {
+    local last c files
+    last="$(git log -1 --format=%H -- debian/changelog)"
+    [ -n "$last" ] || last="$(git rev-list --max-parents=0 HEAD | tail -1)"
+    while read -r c; do
+        [ -n "$c" ] || continue
+        files="$(git show --name-only --format='' "$c" | sed '/^$/d')"
+        if printf '%s\n' "$files" | grep -qvE '^debian/(changelog|control)$'; then
+            printf '%s\n' "$c"
+        fi
+    done < <(git rev-list --reverse "$last..HEAD")
+}
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+
+begin_or_resume pkg-update
+
+if [ "$RESUMING" = 0 ]; then
+    COMMIT_MSG=""
+    commit_args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
+            -m*) COMMIT_MSG="${1#-m}" ;;
+            -h|--help) usage 0 ;;
+            -*) die "unknown option: $1" ;;
+            *) commit_args+=("$1") ;;
+        esac
+        shift
+    done
+    [ -n "$COMMIT_MSG" ] || die "a changelog message (-m) is required"
+
+    require_clean_tree
+    msg "Fetching origin..."
+    git fetch -q origin
+    require_branches
+
+    checkout_uptodate debian/sid
+
+    COMMITS=()
+    if [ "${#commit_args[@]}" -gt 0 ]; then
+        for c in "${commit_args[@]}"; do
+            h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
+            COMMITS+=("$h")
+        done
+    else
+        mapfile -t COMMITS < <(detect_pkg_commits)
+        [ "${#COMMITS[@]}" -ge 1 ] || die \
+"no packaging commits found on debian/sid since the last changelog entry.
+Commit your debian/ change on debian/sid first, or pass explicit commit refs."
+        if [ "${#COMMITS[@]}" -gt 1 ]; then
+            msg "Auto-detected ${#COMMITS[@]} commits to propagate:"
+            for c in "${COMMITS[@]}"; do msg "    $(git log -1 --oneline "$c")"; done
+            confirm "Propagate these ${#COMMITS[@]} commits?" ||
+                die "aborted; re-run passing the exact commit ref(s) you want."
+        fi
+    fi
+
+    cur="$(changelog_version debian/sid)"
+    VERSION_BASE="$(bump_revision "$cur")"
+    msg "Revision bump: $cur -> $VERSION_BASE"
+
+    save_state "" ""
+fi
+
+proc_pkgupdate() {
+    local b="$1"
+    if [ "$b" = debian/sid ]; then
+        checkout_uptodate debian/sid       # packaging commit(s) already present here
+        finalize_branch "$b"
+        return
+    fi
+    if [ -z "$RESUME_PHASE" ]; then
+        checkout_uptodate "$b"
+        save_state "$b" cherry-pick
+        git cherry-pick "${COMMITS[@]}" ||
+            conflict_halt "$b" cherry-pick "cherry-picking the packaging change onto $b"
+    else
+        ensure_resolved "$b" "$RESUME_PHASE"
+    fi
+    finalize_branch "$b"
+}
+
+run_multibranch proc_pkgupdate
+push_hint

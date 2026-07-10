@@ -1,0 +1,30 @@
+# Cross-repo build order for cascaded rebuilds (used by deb-cascade).
+#
+# One non-comment line per build step. Repos on the same line have no build
+# dependency on each other and can be built in parallel. Each line depends only
+# on earlier lines, so every line must be built by CI and published to /staging
+# before the next line can build. Names are checkout directory names.
+#
+# Maintained by hand; the graph changes rarely. It was derived from the
+# inter-package build-dependencies (any Build-Depends whose package matches the
+# is_our_package heuristic), which are currently:
+#
+#   liboxenmq              -> oxen-encoding, oxen-logging
+#   libquic                -> oxen-encoding, oxen-logging
+#   libsession-util        -> oxen-encoding
+#   pyoxenc                -> oxen-encoding
+#   lokinet                -> liboxenmq
+#   oxen-core              -> liboxenmq, oxen-logging
+#   pyoxenmq               -> liboxenmq
+#   libsession-python      -> libsession-util
+#   session-router         -> liboxenmq, libquic, oxen-encoding, oxen-logging
+#   session-storage-server -> liboxenmq, libquic, oxen-encoding, oxen-logging
+#   session-pysogs         -> pyoxenc, pyoxenmq
+#
+# When editing: keep every repo on a line strictly later than all of its
+# dependencies above.
+
+oxen-encoding oxen-logging
+liboxenmq libquic libsession-util pyoxenc
+libsession-python lokinet oxen-core pyoxenmq session-router session-storage-server
+session-pysogs

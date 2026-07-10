@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+#
+# deb-add-distro — create packaging for a new distro release by branching from
+# the most relevant existing branch.
+#
+# Usage: ./deb-add-distro <repo> <debian|ubuntu>/<codename>
+#
+#   <repo>     managed checkout directory (e.g. oxen-mq)
+#   <branch>   new packaging branch, e.g. ubuntu/resolute or debian/duke
+#
+# New debian/* branches fork from debian/sid; new ubuntu/* branches fork from the
+# newest existing ubuntu/* branch. The branch's ~suffix must already be defined
+# in build-distros.bash. Makes the three standard edits (.drone.jsonnet distro,
+# debian/gbp.conf debian-branch + dist, and a new changelog entry with the new
+# codename + suffix) and commits. It does NOT push (use deb-push).
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+
+strip_suffix() {
+    local v="$1" s="${version_suffix[$2]:-}"
+    [ -n "$s" ] && printf '%s\n' "${v%"$s"}" || printf '%s\n' "$v"
+}
+
+# Refuse if the builder docker image for <codename> doesn't exist. The image name
+# pattern comes from the base branch's .drone.jsonnet distro_docker line.
+check_builder_image() {
+    local baseref="$1" codename="$2" line prefix suffix image
+    line="$(git show "$baseref:.drone.jsonnet" 2>/dev/null | grep -m1 'distro_docker *=')" ||
+        { warn "no distro_docker line in .drone.jsonnet; skipping builder-image check"; return 0; }
+    prefix="$(printf '%s' "$line" | sed -n "s/.*=[ \t]*'\([^']*\)'[ \t]*+[ \t]*distro.*/\1/p")"
+    suffix="$(printf '%s' "$line" | sed -n "s/.*distro[ \t]*+[ \t]*'\([^']*\)'.*/\1/p")"
+    [ -n "$prefix" ] || { warn "cannot parse distro_docker; skipping builder-image check"; return 0; }
+    image="$prefix$codename$suffix"
+    msg "Checking builder image: $image"
+    if command -v docker >/dev/null 2>&1; then
+        docker manifest inspect "$image" >/dev/null 2>&1 && return 0
+        die "builder image '$image' not found — build it in ../session-docker-ci first"
+    elif command -v skopeo >/dev/null 2>&1; then
+        skopeo inspect "docker://$image" >/dev/null 2>&1 && return 0
+        die "builder image '$image' not found — build it in ../session-docker-ci first"
+    else
+        warn "neither docker nor skopeo available; cannot verify builder image $image"
+    fi
+}
+
+[ $# -eq 2 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; newbranch="$2"
+resolve_repo "$repo"
+
+family="${newbranch%%/*}"
+codename="${newbranch#*/}"
+case "$family" in
+    debian|ubuntu) ;;
+    *) die "branch must start with debian/ or ubuntu/ (got '$newbranch')" ;;
+esac
+[ "$codename" != "$newbranch" ] && [ -n "$codename" ] || die "missing codename in '$newbranch'"
+[ -n "${version_suffix[$newbranch]:-}" ] ||
+    die "no version suffix defined for '$newbranch' in build-distros.bash — add it there first"
+
+require_clean_tree
+msg "Fetching origin..."
+git fetch -q origin
+branch_exists "$newbranch" && die "$newbranch already exists"
+
+if [ "$family" = debian ]; then
+    base=debian/sid
+else
+    base="$(newest_ubuntu)" || die "$REPO has no ubuntu/* branch to fork from"
+fi
+branch_exists "$base" || die "base branch $base not found"
+baseref="$(branch_ref "$base")"
+msg "Forking $(cpkg "$newbranch") from $(cpkg "$base")"
+
+check_builder_image "$baseref" "$codename"
+
+# The base is a remote ref (e.g. origin/ubuntu/questing). Create with --no-track so
+# the new branch does not inherit the *base* as its upstream (which would make a
+# bare `git push` target the wrong remote branch), then point its upstream at its
+# own name, origin/<newbranch>. That ref doesn't exist on the remote yet, so set
+# the tracking config directly (`git branch --set-upstream-to` requires it to
+# exist). A later `git push` then creates/updates the correctly-named branch.
+git checkout -q --no-track -b "$newbranch" "$baseref"
+git config "branch.$newbranch.remote" origin
+git config "branch.$newbranch.merge" "refs/heads/$newbranch"
+
+# 1) .drone.jsonnet: distro codename
+sed -i "s/^local distro = '[^']*';/local distro = '$codename';/" .drone.jsonnet
+grep -q "^local distro = '$codename';" .drone.jsonnet ||
+    die "failed to update 'local distro' in .drone.jsonnet"
+
+# 2) debian/gbp.conf: debian-branch + dist
+sed -i -e "s#^debian-branch = .*#debian-branch = $newbranch#" \
+       -e "s#^dist = .*#dist = $codename#" debian/gbp.conf
+grep -q "^debian-branch = $newbranch\$" debian/gbp.conf ||
+    die "failed to update debian-branch in debian/gbp.conf"
+grep -q "^dist = $codename\$" debian/gbp.conf ||
+    die "failed to update dist in debian/gbp.conf"
+
+# 3) new changelog entry: same base version, new suffix, codename distribution
+basever="$(strip_suffix "$(changelog_version "$baseref")" "$base")"
+newver="$basever${version_suffix[$newbranch]}"
+title="${codename^} deb"
+msg "Changelog: $(cver "$newver") ($codename)"
+filter_dch dch --newversion "$newver" --distribution "$codename" \
+    --force-distribution --force-bad-version "$title"
+
+regen_control
+git add .drone.jsonnet debian/gbp.conf debian/changelog debian/control
+git commit -q -m "$title"
+
+cat >&2 <<EOF
+
+${C_OK}Created${C_RESET} $(cpkg "$newbranch") (from $base) at $(cver "$newver"). Nothing has been pushed.
+Remember to add $(cpkg "$newbranch") to the 'distros' list in build-distros.bash when
+it should join the regular build set. Push it when ready with:
+    ${C_HDR}./deb-push $REPO $newbranch${C_RESET}
+EOF

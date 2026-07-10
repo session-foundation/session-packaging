@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+#
+# deb-cascade — push a branch across all repos in dependency order, one
+# build-order step at a time, monitoring CI and pausing for the manual /staging
+# publish between steps.
+#
+# Usage: ./deb-cascade <branch> [<repo>...] [--skip <repo>]...
+#
+#   <branch>       branch to push in every repo, e.g. ubuntu/resolute
+#   <repo>...      optional whitelist (default: all repos in build-order)
+#   --skip <repo>  exclude a repo (repeatable). NOTE: skip a repo's dependents
+#                  too, or their dep pre-check will fail on the missing package.
+#
+# For each build-order line (repos on a line build in parallel):
+#   1. skip repos already published in /staging at the branch's version (so it is
+#      safe to re-run after a failure or interruption),
+#   2. push the rest (deb-push first verifies earlier steps are in /staging),
+#   3. watch each CI build to completion, alerting on success and stopping on
+#      failure,
+#   4. pause for you to upload the built packages to /staging (manual signing
+#      step), auto-rechecking until they appear, then continue to the next line.
+#
+# Requires the 'drone' CLI with DRONE_SERVER/DRONE_TOKEN set.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+
+STAGING="/staging"
+POLL="${DEB_CASCADE_POLL:-4}"                # seconds between CI status polls
+POLL_STAGE="${DEB_CASCADE_STAGE_POLL:-15}"   # /staging fallback re-check interval
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+branch="$1"; shift
+only=() skip=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --skip) shift; [ $# -gt 0 ] || die "--skip needs a repo (or comma-separated list)"; IFS=, read -ra _sk <<< "$1"; skip+=("${_sk[@]}") ;;
+        --skip=*) IFS=, read -ra _sk <<< "${1#--skip=}"; skip+=("${_sk[@]}") ;;
+        -*) die "unknown option: $1" ;;
+        *) only+=("$1") ;;
+    esac
+    shift
+done
+case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
+
+require_drone
+
+# The staging distribution must already exist (reprepro won't be populated for a
+# brand-new distro until it's exported once, even empty) — otherwise CI builds
+# that pull from it fail their apt-get update. Fail fast rather than mid-cascade.
+dist="${branch#*/}"
+repo_dist_exists "$STAGING" "$dist" || die \
+"the $STAGING repo for '$dist' doesn't exist yet:
+    https://$DEB_REPO_HOST$STAGING/dists/$dist/
+Export that distribution in reprepro first (an empty one is fine), then re-run."
+
+want() {
+    in_list "$1" "${skip[*]:-}" && return 1
+    [ "${#only[@]}" -eq 0 ] && return 0
+    in_list "$1" "${only[*]}"
+}
+in_repo() { ( cd "$SP_ROOT/$1"; shift; "$@" ); }
+
+# Read build-order into an array of lines (comments/blanks stripped).
+steps=()
+while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | xargs || true)"
+    [ -n "$line" ] && steps+=("$line")
+done < "$SP_ROOT/build-order"
+[ "${#steps[@]}" -gt 0 ] || die "no steps found in $SP_ROOT/build-order"
+
+stepno=0
+for line in "${steps[@]}"; do
+    stepno=$((stepno + 1))
+    read -ra all <<< "$line"
+    repos=()
+    for r in "${all[@]}"; do want "$r" && repos+=("$r"); done
+    [ "${#repos[@]}" -gt 0 ] || continue
+
+    msg ""
+    msg "$C_HDR========== build step $stepno: ${repos[*]} ==========$C_RESET"
+
+    # 1) reentrancy: drop repos already published in /staging.
+    todo=()
+    for r in "${repos[@]}"; do
+        [ -d "$SP_ROOT/$r/.git" ] || die "repo '$r' not found — clone it first"
+        if ! in_repo "$r" branch_exists "$branch"; then
+            if in_repo "$r" family_base_exists "$branch"; then
+                die "repo '$r' has no '$branch' branch — run: ./deb-add-distro-all $branch"
+            fi
+            msg "[$(cpkg "$r")] no ${branch%%/*} packaging — $C_DIM skipping$C_RESET"
+            continue
+        fi
+        if in_repo "$r" published_in_repo "$STAGING" "$branch"; then
+            msg "[$(cpkg "$r")] already in $STAGING — $C_DIM skipping$C_RESET"
+        else
+            todo+=("$r")
+        fi
+    done
+    [ "${#todo[@]}" -gt 0 ] || { msg "step $stepno already complete"; continue; }
+
+    # 2) push (deb-push's dep pre-check enforces that earlier steps are staged).
+    # Record whether each push was a no-op (branch already on the remote at this
+    # commit): that distinguishes a stale failed build from a fresh failure.
+    declare -A sha=() bnum=() noop=()
+    for r in "${todo[@]}"; do
+        sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
+        rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
+        [ "$rem" = "${sha[$r]}" ] && noop[$r]=1 || noop[$r]=0
+        msg "[$(cpkg "$r")] pushing $branch ..."
+        "$SP_ROOT/deb-push" "$r" "$branch"
+    done
+
+    # 3) locate each build, auto-restart a stale failure once, and watch to
+    # completion in one live loop. The per-project block refreshes each poll
+    # (dim=locating/queued, yellow=building, green=done, red=failed). Exactly one
+    # line is emitted per project per poll so the in-place block stays aligned, and
+    # nothing else prints inside the loop. Every drone call is `|| true`-guarded so
+    # a transient CLI error can't abort the run under `set -e`.
+    declare -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=()
+    msg "Watching CI (every ${POLL}s)..."
+    while :; do
+        all_done=1; lines=()
+        for r in "${todo[@]}"; do
+            slug="$(in_repo "$r" origin_slug)"
+
+            if [ -n "${gaveup[$r]:-}" ]; then
+                lines+=("$(printf '  %-22s %sno build found%s' "$r" "$C_ERR" "$C_RESET")")
+                continue
+            fi
+
+            # Locate the build (ignoring a just-restarted stale build until its
+            # replacement appears); give up after ~15 polls with no build.
+            if [ -z "${bnum[$r]:-}" ]; then
+                cand="$(drone_build_for "$slug" "$branch" "${sha[$r]}" 2>/dev/null || true)"
+                if [ -n "$cand" ] && [ "$cand" != "${oldfail[$r]:-}" ]; then
+                    bnum[$r]="$cand"; tries[$r]=0
+                else
+                    tries[$r]=$(( ${tries[$r]:-0} + 1 ))
+                    if [ "${tries[$r]}" -ge 15 ]; then
+                        gaveup[$r]=1; cst[$r]=nobuild
+                        lines+=("$(printf '  %-22s %sno build found%s' "$r" "$C_ERR" "$C_RESET")")
+                    else
+                        all_done=0
+                        lines+=("$(printf '  %-22s %slocating…%s' "$r" "$C_DIM" "$C_RESET")")
+                    fi
+                    continue
+                fi
+            fi
+
+            detail="$(drone_build_detail "$slug" "${bnum[$r]}")"
+            ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"
+            [ -n "$ov" ] || ov=pending
+
+            # Auto-restart a stale failed build once (nothing new was pushed).
+            if [ "${restarted[$r]:-0}" = 0 ] && [ "${noop[$r]:-0}" = 1 ] \
+               && drone_terminal "$ov" && [ "$ov" != success ]; then
+                if drone_restart "$slug" "${bnum[$r]}"; then
+                    restarted[$r]=1; oldfail[$r]="${bnum[$r]}"; bnum[$r]=""; all_done=0
+                    lines+=("$(printf '  %-22s %srestarting #%s…%s' "$r" "$C_WARN" "${oldfail[$r]}" "$C_RESET")")
+                    continue
+                fi
+            fi
+
+            cst[$r]="$ov"
+            drone_terminal "$ov" || all_done=0
+            tags=""
+            while IFS= read -r sline; do
+                [ -n "$sline" ] || continue
+                tags+=" $(ci_tag "$(stage_arch "${sline%=*}")" "${sline##*=}")"
+            done < <(printf '%s\n' "$detail" | sed -n 's/^STAGE=//p')
+            [ -n "$tags" ] || tags=" $(ci_tag build "$ov")"
+            bpad=$(( 5 - ${#bnum[$r]} )); [ "$bpad" -lt 1 ] && bpad=1
+            blink="$(hyperlink "$DRONE_SERVER/$slug/${bnum[$r]}" "#${bnum[$r]}")"
+            lines+=("$(printf '  %-22s %s%*s%s' "$r" "$blink" "$bpad" "" "$tags")")
+        done
+        render_block "${lines[@]}"
+        [ "$all_done" = 1 ] && break
+        sleep "$POLL"
+    done
+    render_block_end
+    failed=()
+    for r in "${todo[@]}"; do [ "${cst[$r]:-}" = success ] || failed+=("$r"); done
+    [ "${#failed[@]}" -eq 0 ] ||
+        die "CI failed for: ${failed[*]} — fix and re-run (finished steps are skipped)"
+
+    # 5) staging barrier: manual publish, then re-check (in place) until present.
+    msg ""
+    msg "${C_OK}CI passed${C_RESET} for step $stepno: ${todo[*]}"
+    msg "Upload these to the $STAGING repo now (manual signing step)."
+    msg "On the main reprepro server run: ${C_BOLD}DISTRO=${branch//\//-} ./debs-to-staging.sh${C_RESET}"
+    while :; do
+        pend=()
+        for r in "${todo[@]}"; do
+            in_repo "$r" published_in_repo "$STAGING" "$branch" || pend+=("$r")
+        done
+        if [ "${#pend[@]}" -eq 0 ]; then
+            [ -t 0 ] && printf '\n' >&2
+            msg "${C_OK}All of step $stepno are in $STAGING.${C_RESET}"
+            break
+        fi
+        if [ -t 0 ]; then
+            printf '\r\033[K  waiting for %s in %s  [Enter = recheck, "skip" = force] ' \
+                "${pend[*]}" "$STAGING" >&2
+            ans=""
+            read -t "$POLL_STAGE" -r ans || true
+            [ "$ans" = skip ] && { printf '\n' >&2; warn "forced past staging for: ${pend[*]}"; break; }
+        else
+            sleep "$POLL_STAGE"
+        fi
+    done
+
+    unset sha bnum
+done
+
+msg ""
+msg "${C_OK}Cascade complete for $branch.${C_RESET}"

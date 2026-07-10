@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# deb-push — push active distro branches to origin (which triggers the CI builds).
+#
+# Usage: ./deb-push <repo> [<branch-glob>...]
+#
+#   <repo>          managed checkout directory (e.g. oxen-mq)
+#   <branch-glob>   which branches to push; globs match against the active distro
+#                   list, e.g. debian/sid, 'debian/*', 'ubuntu/*'. Quote globs so
+#                   the shell doesn't expand them. Multiple are accepted either
+#                   space- or comma-separated (debian/sid debian/forky, or
+#                   debian/sid,debian/forky). Default: 'debian/*' 'ubuntu/*'.
+#
+# If any glob matches no active branch, nothing is pushed. Before pushing, a
+# dependency pre-check verifies that every "ours" build-dependency of each branch
+# is available at the required version in that branch's target reprepro repo
+# (parsed from its .drone.jsonnet); if any is missing, nothing is pushed.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+
+# Accept space-separated and comma-separated globs (comma matches --only/--skip).
+globs=()
+for a in "$@"; do IFS=, read -ra _g <<< "$a"; globs+=("${_g[@]}"); done
+[ "${#globs[@]}" -gt 0 ] || globs=('debian/*' 'ubuntu/*')
+
+# Expand globs against the active distro list; fail fast on a non-matching glob.
+selected=()
+for g in "${globs[@]}"; do
+    hits=()
+    for b in "${distros[@]}"; do
+        # shellcheck disable=SC2254
+        case "$b" in $g) hits+=("$b") ;; esac
+    done
+    [ "${#hits[@]}" -gt 0 ] || die "no active branch matches '$g' — nothing pushed"
+    selected+=("${hits[@]}")
+done
+# De-duplicate, preserving order.
+mapfile -t selected < <(printf '%s\n' "${selected[@]}" | awk '!seen[$0]++')
+
+msg "Fetching origin..."
+git fetch -q origin
+
+msg "Checking dependencies for: ${selected[*]}"
+fail=0
+for b in "${selected[@]}"; do
+    dep_check "$b" || fail=1
+done
+[ "$fail" = 0 ] || die "dependency pre-check failed (see above) — nothing pushed"
+
+pushed=()
+for b in "${selected[@]}"; do
+    branch_exists "$b" || die "branch $b does not exist locally or on origin — nothing more pushed"
+    # origin was fetched above, so local == origin/<b> means nothing to push
+    if [ "$(git rev-parse "$b")" = "$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)" ]; then
+        msg ">> $(cpkg "$b") $C_DIM already up to date$C_RESET"
+        continue
+    fi
+    msg ">> pushing $(cpkg "$b")"
+    git push origin "$b"
+    pushed+=("$b")
+done
+
+if [ "${#pushed[@]}" -gt 0 ]; then
+    msg "${C_OK}Pushed:${C_RESET} ${pushed[*]}"
+else
+    msg "Nothing to push — all selected branches were already up to date."
+fi

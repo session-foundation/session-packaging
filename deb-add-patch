@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# deb-add-patch — add source patch(es) to the gbp patch queue across active
+# distro branches.
+#
+# Usage: ./deb-add-patch <repo> <commit> [<commit>...] -m "<message>" [--only <glob>[,…]]...
+#
+#   <repo>         managed checkout directory (e.g. liboxenmq)
+#   <commit>       one or more commit-ish to cherry-pick into the patch queue
+#   -m MSG         changelog/commit message (required)
+#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/sid or
+#                  'debian/*'), for a fix only some distros need. Repeatable and
+#                  comma-separated.
+#
+# For each branch it imports the patch queue, cherry-picks the commit(s), exports
+# the patches back, updates the changelog, regenerates debian/control, and commits
+# (no push; use deb-push).
+#
+# Version: a full run bumps the debian revision (<upstream>-<N+1><suffix>). An
+# --only run instead appends/increments a +M (<version>+M) and leaves -N alone —
+# a per-distro -N bump would outrank newer distros' packages and break
+# distro-upgrade ordering.
+#
+# On a cherry-pick conflict it stops with resume instructions; fix it and re-run
+# the same command to continue.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+INVOCATION="$0 $*"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+
+begin_or_resume add-patch
+
+if [ "$RESUMING" = 0 ]; then
+    COMMIT_MSG=""
+    commit_args=()
+    only_globs=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
+            -m*) COMMIT_MSG="${1#-m}" ;;
+            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; IFS=, read -ra _g <<< "$1"; only_globs+=("${_g[@]}") ;;
+            --only=*) IFS=, read -ra _g <<< "${1#--only=}"; only_globs+=("${_g[@]}") ;;
+            -h|--help) usage 0 ;;
+            -*) die "unknown option: $1" ;;
+            *) commit_args+=("$1") ;;
+        esac
+        shift
+    done
+    [ "${#commit_args[@]}" -ge 1 ] || die "at least one commit to cherry-pick is required"
+    [ -n "$COMMIT_MSG" ] || die "a changelog message (-m) is required"
+
+    require_clean_tree
+    msg "Fetching origin..."
+    git fetch -q origin
+
+    # --only: restrict to matching branches and use a +M bump (leaves -N intact).
+    if [ "${#only_globs[@]}" -gt 0 ]; then
+        PARTIAL=1
+        hits=""
+        for g in "${only_globs[@]}"; do
+            m=""
+            for b in "${distros[@]}"; do case "$b" in $g) m+=" $b" ;; esac; done
+            [ -n "$m" ] || die "no active branch matches '$g'"
+            hits+="$m"
+        done
+        TARGET="$(printf '%s\n' $hits | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+    fi
+
+    require_branches
+
+    # Resolve commit-ish to stable hashes now (before switching branches).
+    COMMITS=()
+    for c in "${commit_args[@]}"; do
+        h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
+        COMMITS+=("$h")
+    done
+
+    if [ "${PARTIAL:-0}" = 1 ]; then
+        msg "Patching (--only) $(cpkg "$TARGET"): +M bump, ${#COMMITS[@]} commit(s)"
+    else
+        cur="$(changelog_version "$(branch_ref debian/sid)")"
+        VERSION_BASE="$(bump_revision "$cur")"
+        msg "Revision bump: $cur -> $VERSION_BASE  (${#COMMITS[@]} commit(s))"
+    fi
+
+    save_state "" ""
+fi
+
+proc_patch() {
+    local b="$1"
+    if [ -z "$RESUME_PHASE" ]; then
+        checkout_uptodate "$b"
+        gbp pq import --force                # leaves us on the patch-queue branch
+        save_state "$b" cherry-pick
+        git cherry-pick "${COMMITS[@]}" ||
+            conflict_halt "$b" cherry-pick "cherry-picking onto the $b patch queue"
+    else
+        ensure_resolved "$b" "$RESUME_PHASE"
+    fi
+    gbp pq export --commit
+    finalize_branch "$b"
+}
+
+run_multibranch proc_patch
+push_hint

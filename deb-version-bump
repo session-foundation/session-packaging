@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# deb-version-bump — new upstream release across all active distro branches.
+#
+# Usage: ./deb-version-bump <repo> [--force] [<source-ref>]
+#
+#   <repo>         managed checkout directory (e.g. oxen-mq)
+#   <source-ref>   branch/tag to merge as the new upstream (default: origin/stable)
+#   --force        skip the "new version must be greater" guard
+#
+# The new version is read from <source-ref>'s top-level CMakeLists.txt; the
+# package version is <version>-1 plus the per-distro suffix. For each branch it
+# merges upstream, rebases + re-exports the patch queue, writes the changelog and
+# regenerates debian/control, and commits. It does NOT push (use deb-push).
+#
+# On a merge/patch conflict it stops with resume instructions; fix it and re-run
+# the same command to continue from where it left off.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+INVOCATION="$0 $*"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+
+begin_or_resume version-bump
+
+if [ "$RESUMING" = 0 ]; then
+    FORCE=0
+    SOURCE_REF="origin/stable"
+    got_ref=0
+    for a in "$@"; do
+        case "$a" in
+            --force) FORCE=1 ;;
+            -h|--help) usage 0 ;;
+            -*) die "unknown option: $a" ;;
+            *) [ "$got_ref" = 0 ] || die "unexpected extra argument: $a"; SOURCE_REF="$a"; got_ref=1 ;;
+        esac
+    done
+
+    require_clean_tree
+    msg "Fetching origin..."
+    git fetch -q origin
+    # Let a bare ref like 'stable' resolve to origin/stable when that's what exists.
+    if ! git rev-parse --verify -q "$SOURCE_REF^{commit}" >/dev/null; then
+        if git rev-parse --verify -q "origin/$SOURCE_REF^{commit}" >/dev/null; then
+            SOURCE_REF="origin/$SOURCE_REF"
+        else
+            die "source ref '$SOURCE_REF' not found"
+        fi
+    fi
+    require_branches
+
+    NEW_UPSTREAM="$(parse_cmake_version "$SOURCE_REF")"
+    VERSION_BASE="$NEW_UPSTREAM-1"
+    COMMIT_MSG="$NEW_UPSTREAM release"
+    msg "New upstream version: $NEW_UPSTREAM  (from $SOURCE_REF)"
+
+    if [ "$FORCE" = 0 ]; then
+        for b in "${distros[@]}"; do
+            cur="$(changelog_version "$(branch_ref "$b")")"
+            if ! dpkg --compare-versions "$NEW_UPSTREAM" gt "$(upstream_of "$cur")"; then
+                die "version guard: $b is already at $cur (upstream $(upstream_of "$cur")); \
+new upstream $NEW_UPSTREAM is not greater. Use --force to override."
+            fi
+        done
+    fi
+
+    save_state "" ""
+fi
+
+proc_bump() {
+    local b="$1"
+    if [ -z "$RESUME_PHASE" ]; then
+        checkout_uptodate "$b"
+        gbp pq import --force
+        gbp pq switch                       # back onto the debian branch
+        save_state "$b" merge
+        merge_upstream "$SOURCE_REF" || conflict_halt "$b" merge "merging $SOURCE_REF into $b"
+        save_state "$b" pq-rebase
+        gbp pq rebase || conflict_halt "$b" pq-rebase "rebasing the patch queue on $b"
+    else
+        ensure_resolved "$b" "$RESUME_PHASE"
+        if [ "$RESUME_PHASE" = merge ]; then
+            git checkout -q "$b"
+            save_state "$b" pq-rebase
+            gbp pq rebase || conflict_halt "$b" pq-rebase "rebasing the patch queue on $b"
+        fi
+    fi
+    gbp pq export --commit
+    finalize_branch "$b"
+}
+
+run_multibranch proc_bump
+push_hint

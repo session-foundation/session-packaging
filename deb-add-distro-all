@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# deb-add-distro-all — create a new distro branch in every repo listed in
+# build-order (order-independent; branch creation has no cross-repo dependency).
+#
+# Usage: ./deb-add-distro-all <debian|ubuntu>/<codename> [<repo>...]
+#
+#   <branch>   new packaging branch, e.g. ubuntu/resolute
+#   <repo>...  optional subset of repos (default: all in build-order)
+#
+# Runs deb-add-distro per repo, skipping repos that already have the branch (so
+# it is safe to re-run). Does NOT push; follow with deb-cascade to push in
+# dependency order.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+branch="$1"; shift
+only=("$@")
+case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
+
+want() { [ "${#only[@]}" -eq 0 ] && return 0; in_list "$1" "${only[*]}"; }
+
+repos=()
+while IFS= read -r line; do
+    line="${line%%#*}"
+    for r in $line; do repos+=("$r"); done
+done < "$SP_ROOT/build-order"
+
+created=() skipped=() missing=() nobase=() failed=()
+for r in "${repos[@]}"; do
+    want "$r" || continue
+    if [ ! -d "$SP_ROOT/$r/.git" ]; then
+        warn "repo '$r' not cloned — skipping"; missing+=("$r"); continue
+    fi
+    if ( cd "$SP_ROOT/$r"; branch_exists "$branch" ); then
+        msg "[$(cpkg "$r")] already has $branch — $C_DIM skipping$C_RESET"; skipped+=("$r"); continue
+    fi
+    if ! ( cd "$SP_ROOT/$r"; family_base_exists "$branch" ); then
+        msg "[$(cpkg "$r")] no ${branch%%/*} packaging — $C_DIM skipping$C_RESET"; nobase+=("$r"); continue
+    fi
+    msg "[$(cpkg "$r")] creating $branch ..."
+    if "$SP_ROOT/deb-add-distro" "$r" "$branch"; then
+        created+=("$r")
+    else
+        warn "[$r] deb-add-distro failed"; failed+=("$r")
+    fi
+done
+
+msg ""
+msg "${C_OK}Created:${C_RESET}            ${created[*]:-(none)}"
+[ "${#skipped[@]}" -gt 0 ] && msg "Skipped (existing): ${skipped[*]}"
+[ "${#nobase[@]}"  -gt 0 ] && msg "No ${branch%%/*} packaging:  ${nobase[*]}"
+[ "${#missing[@]}" -gt 0 ] && msg "Not cloned:         ${missing[*]}"
+[ "${#failed[@]}"  -gt 0 ] && msg "Failed:             ${failed[*]}"
+if [ "${#created[@]}" -gt 0 ]; then
+    msg ""
+    msg "Review the new branches, then push them in dependency order with:"
+    msg "    ./deb-cascade $branch"
+fi
+[ "${#failed[@]}" -eq 0 ]
