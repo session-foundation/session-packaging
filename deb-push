@@ -2,7 +2,7 @@
 #
 # deb-push — push active distro branches to origin (which triggers the CI builds).
 #
-# Usage: ./deb-push <repo> [<branch-glob>...]
+# Usage: ./deb-push <repo> [--no-wait] [<branch-glob>...]
 #
 #   <repo>          managed checkout directory (e.g. oxen-mq)
 #   <branch-glob>   which branches to push; globs match against the active distro
@@ -11,11 +11,18 @@
 #                   so the shell doesn't expand them. Multiple are accepted either
 #                   space- or comma-separated (debian/sid forky, or sid,forky).
 #                   Default: 'debian/*' 'ubuntu/*'.
+#   --no-wait       just push; don't watch the resulting CI builds.
 #
 # If any glob matches no active branch, nothing is pushed. Before pushing, a
 # dependency pre-check verifies that every "ours" build-dependency of each branch
 # is available at the required version in that branch's target reprepro repo
 # (parsed from its .drone.jsonnet); if any is missing, nothing is pushed.
+#
+# It then watches the CI builds for the selected branches (at their current commit)
+# to completion — live per-branch status, refreshing, with links to each build —
+# and exits non-zero if any fails. This happens whether or not this run actually
+# pushed anything, so re-running deb-push just re-attaches to the in-flight builds.
+# Skipped by --no-wait, or if the drone CLI / DRONE_SERVER+DRONE_TOKEN aren't set.
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
@@ -25,9 +32,16 @@ case "$1" in -h|--help) usage 0 ;; esac
 repo="$1"; shift
 resolve_repo "$repo"
 
+# Pull --no-wait out of the args; the rest are branch globs.
+NOWAIT=0
+args=()
+for a in "$@"; do
+    case "$a" in --no-wait) NOWAIT=1 ;; *) args+=("$a") ;; esac
+done
+
 # Accept space- and comma-separated globs, and bare codenames (sid, trixie, …),
 # which expand_distro_spec turns into full branches.
-mapfile -t globs < <(expand_distro_spec "$@")
+mapfile -t globs < <(expand_distro_spec ${args[@]+"${args[@]}"})
 [ "${#globs[@]}" -gt 0 ] || globs=('debian/*' 'ubuntu/*')
 
 # Expand globs against the active distro list; fail fast on a non-matching glob.
@@ -83,3 +97,18 @@ if [ "${#pushed[@]}" -gt 0 ]; then
 else
     msg "Nothing to push — all selected branches were already up to date."
 fi
+
+# Watch the CI builds for every selected branch at its current commit — not just
+# the ones pushed this run — so re-running deb-push (with nothing new to push)
+# still reports on the in-flight builds. --no-wait / no drone skips it.
+[ "$NOWAIT" = 1 ] && exit 0
+have_drone || { warn "drone CLI / DRONE_SERVER+DRONE_TOKEN not available — not watching CI"; exit 0; }
+slug="$(origin_slug)"
+[ -n "$slug" ] || { warn "couldn't determine the origin slug — not watching CI"; exit 0; }
+MON_ITEMS=()
+for b in "${selected[@]}"; do
+    MON_ITEMS+=("$b|$slug|$b|$(git rev-parse "$b")|0")
+done
+monitor_ci
+[ "${#MON_FAILED[@]}" -eq 0 ] || die "CI failed for: ${MON_FAILED[*]}"
+msg "${C_OK}All CI builds passed.${C_RESET}"

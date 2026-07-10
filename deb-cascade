@@ -104,7 +104,7 @@ for line in "${steps[@]}"; do
     # 2) push (deb-push's dep pre-check enforces that earlier steps are staged).
     # Record whether each push was a no-op (branch already on the remote at this
     # commit): that distinguishes a stale failed build from a fresh failure.
-    declare -A sha=() bnum=() noop=()
+    declare -A sha=() noop=()
     for r in "${todo[@]}"; do
         sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
         rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
@@ -113,78 +113,18 @@ for line in "${steps[@]}"; do
         "$SP_ROOT/deb-push" "$r" "$branch"
     done
 
-    # 3) locate each build, auto-restart a stale failure once, and watch to
-    # completion in one live loop. The per-project block refreshes each poll
-    # (dim=locating/queued, yellow=building, green=done, red=failed). Exactly one
-    # line is emitted per project per poll so the in-place block stays aligned, and
-    # nothing else prints inside the loop. Every drone call is `|| true`-guarded so
-    # a transient CLI error can't abort the run under `set -e`.
-    declare -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=()
-    msg "Watching CI (every ${POLL}s)..."
-    while :; do
-        all_done=1; lines=()
-        for r in "${todo[@]}"; do
-            slug="$(in_repo "$r" origin_slug)"
-
-            if [ -n "${gaveup[$r]:-}" ]; then
-                lines+=("$(printf '  %-22s %sno build found%s' "$r" "$C_ERR" "$C_RESET")")
-                continue
-            fi
-
-            # Locate the build (ignoring a just-restarted stale build until its
-            # replacement appears); give up after ~15 polls with no build.
-            if [ -z "${bnum[$r]:-}" ]; then
-                cand="$(drone_build_for "$slug" "$branch" "${sha[$r]}" 2>/dev/null || true)"
-                if [ -n "$cand" ] && [ "$cand" != "${oldfail[$r]:-}" ]; then
-                    bnum[$r]="$cand"; tries[$r]=0
-                else
-                    tries[$r]=$(( ${tries[$r]:-0} + 1 ))
-                    if [ "${tries[$r]}" -ge 15 ]; then
-                        gaveup[$r]=1; cst[$r]=nobuild
-                        lines+=("$(printf '  %-22s %sno build found%s' "$r" "$C_ERR" "$C_RESET")")
-                    else
-                        all_done=0
-                        lines+=("$(printf '  %-22s %slocating…%s' "$r" "$C_DIM" "$C_RESET")")
-                    fi
-                    continue
-                fi
-            fi
-
-            detail="$(drone_build_detail "$slug" "${bnum[$r]}")"
-            ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"
-            [ -n "$ov" ] || ov=pending
-
-            # Auto-restart a stale failed build once (nothing new was pushed).
-            if [ "${restarted[$r]:-0}" = 0 ] && [ "${noop[$r]:-0}" = 1 ] \
-               && drone_terminal "$ov" && [ "$ov" != success ]; then
-                if drone_restart "$slug" "${bnum[$r]}"; then
-                    restarted[$r]=1; oldfail[$r]="${bnum[$r]}"; bnum[$r]=""; all_done=0
-                    lines+=("$(printf '  %-22s %srestarting #%s…%s' "$r" "$C_WARN" "${oldfail[$r]}" "$C_RESET")")
-                    continue
-                fi
-            fi
-
-            cst[$r]="$ov"
-            drone_terminal "$ov" || all_done=0
-            tags=""
-            while IFS= read -r sline; do
-                [ -n "$sline" ] || continue
-                tags+=" $(ci_tag "$(stage_arch "${sline%=*}")" "${sline##*=}")"
-            done < <(printf '%s\n' "$detail" | sed -n 's/^STAGE=//p')
-            [ -n "$tags" ] || tags=" $(ci_tag build "$ov")"
-            bpad=$(( 5 - ${#bnum[$r]} )); [ "$bpad" -lt 1 ] && bpad=1
-            blink="$(hyperlink "$DRONE_SERVER/$slug/${bnum[$r]}" "#${bnum[$r]}")"
-            lines+=("$(printf '  %-22s %s%*s%s' "$r" "$blink" "$bpad" "" "$tags")")
-        done
-        render_block "${lines[@]}"
-        [ "$all_done" = 1 ] && break
-        sleep "$POLL"
+    # 3) watch every build to completion (shared monitor_ci: dim while locating,
+    # per-stage tags while building, terminal tag + build link when done). A no-op
+    # push (branch already on the remote at this commit) lets a stale terminal build
+    # be auto-restarted once; a fresh push never restarts.
+    MON_ITEMS=()
+    for r in "${todo[@]}"; do
+        MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${noop[$r]}")
     done
-    render_block_end
-    failed=()
-    for r in "${todo[@]}"; do [ "${cst[$r]:-}" = success ] || failed+=("$r"); done
-    [ "${#failed[@]}" -eq 0 ] ||
-        die "CI failed for: ${failed[*]} — fix and re-run (finished steps are skipped)"
+    MON_POLL="$POLL"
+    monitor_ci
+    [ "${#MON_FAILED[@]}" -eq 0 ] ||
+        die "CI failed for: ${MON_FAILED[*]} — fix and re-run (finished steps are skipped)"
 
     # 5) staging barrier: manual publish, then re-check (in place) until present.
     msg ""
@@ -212,7 +152,7 @@ for line in "${steps[@]}"; do
         fi
     done
 
-    unset sha bnum
+    unset sha noop
 done
 
 msg ""

@@ -802,6 +802,91 @@ drone_terminal() {
     esac
 }
 
+# Non-fatal counterpart to require_drone: 0 if the drone CLI + creds are present
+# (exported), else 1 (caller decides whether that's fatal).
+have_drone() {
+    command -v drone >/dev/null 2>&1 && [ -n "${DRONE_SERVER:-}" ] && [ -n "${DRONE_TOKEN:-}" ] || return 1
+    export DRONE_SERVER DRONE_TOKEN
+}
+
+# Live-watch a set of CI builds to completion, rendering a refreshing block (one
+# line per item: dim while locating/queued, per-stage tags once building, a
+# terminal tag when done, with an OSC-8 link to the build). Shared by deb-cascade
+# (one item per repo) and deb-push (one item per pushed branch).
+#
+# Input:  MON_ITEMS — each entry "label|slug|branch|sha|noop"; noop=1 lets a stale
+#                     *already-terminal* build be auto-restarted once (cascade
+#                     reentrancy), 0 = never restart.
+#         MON_POLL  — seconds between polls (default 4).
+# Output: MON_FAILED — labels whose build didn't finish "success" (empty = all ok).
+# Every drone call is guarded so a transient CLI hiccup can't abort under `set -e`.
+MON_ITEMS=(); MON_FAILED=()
+monitor_ci() {
+    local poll="${MON_POLL:-4}" n=0 i rec
+    local -a lbl slug br sha noop
+    for rec in "${MON_ITEMS[@]}"; do
+        IFS='|' read -r "lbl[$n]" "slug[$n]" "br[$n]" "sha[$n]" "noop[$n]" <<< "$rec"
+        n=$((n + 1))
+    done
+    MON_FAILED=()
+    [ "$n" -gt 0 ] || return 0
+    local wid=1
+    for ((i = 0; i < n; i++)); do [ "${#lbl[i]}" -gt "$wid" ] && wid="${#lbl[i]}"; done
+
+    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=()
+    local all_done detail ov tags sline bpad blink cand
+    local -a lines
+    msg "Watching CI (every ${poll}s)..."
+    while :; do
+        all_done=1; lines=()
+        for ((i = 0; i < n; i++)); do
+            if [ -n "${gaveup[$i]:-}" ]; then
+                lines+=("$(printf '  %-*s %sno build found%s' "$wid" "${lbl[i]}" "$C_ERR" "$C_RESET")"); continue
+            fi
+            if [ -z "${bnum[$i]:-}" ]; then
+                cand="$(drone_build_for "${slug[i]}" "${br[i]}" "${sha[i]}" 2>/dev/null || true)"
+                if [ -n "$cand" ] && [ "$cand" != "${oldfail[$i]:-}" ]; then
+                    bnum[$i]="$cand"; tries[$i]=0
+                else
+                    tries[$i]=$(( ${tries[$i]:-0} + 1 ))
+                    if [ "${tries[$i]}" -ge 15 ]; then
+                        gaveup[$i]=1; cst[$i]=nobuild
+                        lines+=("$(printf '  %-*s %sno build found%s' "$wid" "${lbl[i]}" "$C_ERR" "$C_RESET")")
+                    else
+                        all_done=0
+                        lines+=("$(printf '  %-*s %slocating…%s' "$wid" "${lbl[i]}" "$C_DIM" "$C_RESET")")
+                    fi
+                    continue
+                fi
+            fi
+            detail="$(drone_build_detail "${slug[i]}" "${bnum[$i]}")"
+            ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"; [ -n "$ov" ] || ov=pending
+            if [ "${restarted[$i]:-0}" = 0 ] && [ "${noop[i]:-0}" = 1 ] \
+               && drone_terminal "$ov" && [ "$ov" != success ]; then
+                if drone_restart "${slug[i]}" "${bnum[$i]}"; then
+                    restarted[$i]=1; oldfail[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
+                    lines+=("$(printf '  %-*s %srestarting #%s…%s' "$wid" "${lbl[i]}" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
+                fi
+            fi
+            cst[$i]="$ov"; drone_terminal "$ov" || all_done=0
+            tags=""
+            while IFS= read -r sline; do
+                [ -n "$sline" ] || continue
+                tags+=" $(ci_tag "$(stage_arch "${sline%=*}")" "${sline##*=}")"
+            done < <(printf '%s\n' "$detail" | sed -n 's/^STAGE=//p')
+            [ -n "$tags" ] || tags=" $(ci_tag build "$ov")"
+            bpad=$(( 5 - ${#bnum[$i]} )); [ "$bpad" -lt 1 ] && bpad=1
+            blink="$(hyperlink "$DRONE_SERVER/${slug[i]}/${bnum[$i]}" "#${bnum[$i]}")"
+            lines+=("$(printf '  %-*s %s%*s%s' "$wid" "${lbl[i]}" "$blink" "$bpad" "" "$tags")")
+        done
+        render_block "${lines[@]}"
+        [ "$all_done" = 1 ] && break
+        sleep "$poll"
+    done
+    render_block_end
+    for ((i = 0; i < n; i++)); do [ "${cst[$i]:-}" = success ] || MON_FAILED+=("${lbl[i]}"); done
+}
+
 # ---------------------------------------------------------------------------
 # success footer
 # ---------------------------------------------------------------------------

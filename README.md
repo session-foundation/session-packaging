@@ -107,7 +107,7 @@ required (they can live on any branch, e.g. a fix committed on one distro);
 branches that already have the commit, or don't exist yet, are skipped; `-m` isn't
 accepted.
 
-### `./deb-push <repo> [<branch-glob>...]`
+### `./deb-push <repo> [--no-wait] [<branch-glob>...]`
 Push branches to origin (triggering CI). Globs match the active distro list, e.g.
 `debian/sid`, `'debian/*'`, `'ubuntu/*'` (quote them), or bare codenames. Give
 several space- or comma-separated (`debian/sid forky` or `sid,forky`). No
@@ -116,6 +116,12 @@ pre-check**: for each branch it verifies every Session-family build-dependency i
 available at the required version in that branch's target reprepro repo (parsed
 from its `.drone.jsonnet`); if any is missing, nothing is pushed (an unsatisfied
 dep is a guaranteed CI failure — publish the dependency first).
+
+After pushing it **watches the triggered CI builds** to completion — the same
+live, refreshing per-branch status display `deb-cascade` uses, with links to each
+build — and exits non-zero if any build fails. Pass `--no-wait` to skip the watch
+(or if the `drone` CLI / `DRONE_SERVER`+`DRONE_TOKEN` aren't available it's skipped
+automatically).
 
 ### `./deb-add-distro <repo> <debian|ubuntu>/<codename>`
 Create packaging for a new distro release. New `debian/*` branches fork from
