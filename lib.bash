@@ -6,6 +6,9 @@
 
 # Absolute path to this repo (where the tools + build-distros.bash live).
 SP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Absolute path of the tool that sourced us, captured now — before any tool cd's
+# into a checkout (resolve_repo) — so usage() can still read its own header.
+SELF="$(cd "$(dirname "${BASH_SOURCE[1]:-$0}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[1]:-$0}")"
 # shellcheck source=build-distros.bash
 source "$SP_ROOT/build-distros.bash"
 
@@ -50,7 +53,8 @@ print_header() {
 }
 
 # Print the calling script's header-comment usage docs and exit (status default 1).
-usage() { print_header "$0"; exit "${1:-1}"; }
+# Uses SELF (absolute) so it works even after a tool has cd'd into a checkout.
+usage() { print_header "$SELF"; exit "${1:-1}"; }
 
 # A single status line that updates in place. On a terminal it rewrites the
 # current line (carriage-return + clear-to-end); when output is redirected it
