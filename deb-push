@@ -47,6 +47,18 @@ mapfile -t selected < <(printf '%s\n' "${selected[@]}" | awk '!seen[$0]++')
 msg "Fetching origin..."
 git fetch -q origin
 
+# Drop active branches that don't exist yet (e.g. a distro deb-version-bump will
+# create later). This is what lets the default "all branches" invocation work even
+# when the configured distro set is ahead of what's actually been created. A glob
+# that matched *no* active distro already failed above, so typos are still caught.
+present=()
+for b in "${selected[@]}"; do
+    if branch_exists "$b"; then present+=("$b")
+    else msg ">> $(cpkg "$b") $C_DIM doesn't exist yet — skipping$C_RESET"; fi
+done
+selected=("${present[@]}")
+[ "${#selected[@]}" -gt 0 ] || { msg "No selected branches exist — nothing to push."; exit 0; }
+
 msg "Checking dependencies for: ${selected[*]}"
 fail=0
 for b in "${selected[@]}"; do
@@ -56,7 +68,6 @@ done
 
 pushed=()
 for b in "${selected[@]}"; do
-    branch_exists "$b" || die "branch $b does not exist locally or on origin — nothing more pushed"
     # origin was fetched above, so local == origin/<b> means nothing to push
     if [ "$(git rev-parse "$b")" = "$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)" ]; then
         msg ">> $(cpkg "$b") $C_DIM already up to date$C_RESET"

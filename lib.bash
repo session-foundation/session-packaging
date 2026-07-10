@@ -806,9 +806,11 @@ drone_terminal() {
 # success footer
 # ---------------------------------------------------------------------------
 push_hint() {
-    # Under --only (TARGET set) exactly those branches changed, so point the push
-    # command straight at them; a full run leaves it open (all active branches).
-    if [ -n "${TARGET:-}" ]; then
+    # Only a genuinely restricted run (--only, PARTIAL=1) names its branches; a full
+    # run — even one that set TARGET just to reorder/filter (version-bump creating a
+    # distro, pkg-update --no-bump) — points at the bare "all branches" form, since
+    # deb-push with no args already defaults to every active branch.
+    if [ "${PARTIAL:-0}" = 1 ] && [ -n "${TARGET:-}" ]; then
         cat >&2 <<EOF
 
 ${C_OK}Done.${C_RESET} Nothing has been pushed. When you're ready, push the changed branch(es) with:

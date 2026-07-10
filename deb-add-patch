@@ -3,6 +3,12 @@
 # deb-add-patch — add source patch(es) to the gbp patch queue across active
 # distro branches.
 #
+# NOTE: this is for changes to the *upstream source* (they become debian/patches
+# entries via the gbp patch queue). For a change to the *packaging* itself (a
+# debian/ file — rules, control.in, ci-upload.sh, …) use deb-pkg-update instead,
+# which cherry-picks the commit directly onto each branch (and has --no-bump for a
+# changelog-free propagation).
+#
 # Usage: ./deb-add-patch <repo> <commit> [<commit>...] -m "<message>" [--only <glob>[,…]]...
 #
 #   <repo>         managed checkout directory (e.g. liboxenmq)

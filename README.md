@@ -93,12 +93,19 @@ just a version bump + changelog entry so CI rebuilds. Use it to relink against a
 new system-library soname (e.g. libsodium moved on forky). `-m` defaults to
 "Rebuild"; `--only` works as above (`+M` for a partial rebuild).
 
-### `./deb-pkg-update <repo> [<commit>...] -m "<msg>"`
+### `./deb-pkg-update <repo> [<commit>...] -m "<msg>" | <commit>... --no-bump`
 Propagate a **packaging** change (to `debian/…`) with a `-N` revision bump. First
 commit your change on `debian/sid` yourself, then run this: it bumps sid's
 changelog and cherry-picks the packaging commit(s) onto every other branch. With
 no commit refs it auto-detects the packaging commits on sid since the last
 changelog entry (and asks for confirmation if there's more than one).
+
+`--no-bump` cherry-picks the given commit(s) onto every active branch that lacks
+them with **no version bump and no changelog entry** — for when a version bump is
+coming separately and you don't want a throwaway `-N`. Explicit commit ref(s) are
+required (they can live on any branch, e.g. a fix committed on one distro);
+branches that already have the commit, or don't exist yet, are skipped; `-m` isn't
+accepted.
 
 ### `./deb-push <repo> [<branch-glob>...]`
 Push branches to origin (triggering CI). Globs match the active distro list, e.g.
