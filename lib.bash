@@ -834,14 +834,17 @@ monitor_ci() {
     for ((i = 0; i < n; i++)); do [ "${#lbl[i]}" -gt "$wid" ] && wid="${#lbl[i]}"; done
 
     local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=()
-    local all_done detail ov tags sline bpad blink cand
+    local all_done detail ov tags sline bpad blink cand lf
     local -a lines
     msg "Watching CI (every ${poll}s)..."
     while :; do
         all_done=1; lines=()
         for ((i = 0; i < n; i++)); do
+            # colour the label per family, padded to the column by its *plain* width
+            # (cpkg adds escape codes, so %-*s can't do the padding).
+            lf="$(cpkg "${lbl[i]}")$(printf '%*s' "$(( wid - ${#lbl[i]} ))" '')"
             if [ -n "${gaveup[$i]:-}" ]; then
-                lines+=("$(printf '  %-*s %sno build found%s' "$wid" "${lbl[i]}" "$C_ERR" "$C_RESET")"); continue
+                lines+=("$(printf '  %s %sno build found%s' "$lf" "$C_ERR" "$C_RESET")"); continue
             fi
             if [ -z "${bnum[$i]:-}" ]; then
                 cand="$(drone_build_for "${slug[i]}" "${br[i]}" "${sha[i]}" 2>/dev/null || true)"
@@ -851,10 +854,10 @@ monitor_ci() {
                     tries[$i]=$(( ${tries[$i]:-0} + 1 ))
                     if [ "${tries[$i]}" -ge 15 ]; then
                         gaveup[$i]=1; cst[$i]=nobuild
-                        lines+=("$(printf '  %-*s %sno build found%s' "$wid" "${lbl[i]}" "$C_ERR" "$C_RESET")")
+                        lines+=("$(printf '  %s %sno build found%s' "$lf" "$C_ERR" "$C_RESET")")
                     else
                         all_done=0
-                        lines+=("$(printf '  %-*s %slocating…%s' "$wid" "${lbl[i]}" "$C_DIM" "$C_RESET")")
+                        lines+=("$(printf '  %s %slocating…%s' "$lf" "$C_DIM" "$C_RESET")")
                     fi
                     continue
                 fi
@@ -865,7 +868,7 @@ monitor_ci() {
                && drone_terminal "$ov" && [ "$ov" != success ]; then
                 if drone_restart "${slug[i]}" "${bnum[$i]}"; then
                     restarted[$i]=1; oldfail[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
-                    lines+=("$(printf '  %-*s %srestarting #%s…%s' "$wid" "${lbl[i]}" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
+                    lines+=("$(printf '  %s %srestarting #%s…%s' "$lf" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
                 fi
             fi
             cst[$i]="$ov"; drone_terminal "$ov" || all_done=0
@@ -877,7 +880,7 @@ monitor_ci() {
             [ -n "$tags" ] || tags=" $(ci_tag build "$ov")"
             bpad=$(( 5 - ${#bnum[$i]} )); [ "$bpad" -lt 1 ] && bpad=1
             blink="$(hyperlink "$DRONE_SERVER/${slug[i]}/${bnum[$i]}" "#${bnum[$i]}")"
-            lines+=("$(printf '  %-*s %s%*s%s' "$wid" "${lbl[i]}" "$blink" "$bpad" "" "$tags")")
+            lines+=("$(printf '  %s %s%*s%s' "$lf" "$blink" "$bpad" "" "$tags")")
         done
         render_block "${lines[@]}"
         [ "$all_done" = 1 ] && break

@@ -124,7 +124,7 @@ for line in "${steps[@]}"; do
     MON_POLL="$POLL"
     monitor_ci
     [ "${#MON_FAILED[@]}" -eq 0 ] ||
-        die "CI failed for: ${MON_FAILED[*]} — fix and re-run (finished steps are skipped)"
+        die "CI failed for: $(cpkg "${MON_FAILED[*]}") — fix and re-run (finished steps are skipped)"
 
     # 5) staging barrier: manual publish, then re-check (in place) until present.
     msg ""
