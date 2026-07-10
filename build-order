@@ -11,7 +11,7 @@
 #
 #   liboxenmq              -> oxen-encoding, oxen-logging
 #   libquic                -> oxen-encoding, oxen-logging
-#   libsession-util        -> oxen-encoding
+#   libsession-util        -> oxen-encoding, libquic
 #   pyoxenc                -> oxen-encoding
 #   lokinet                -> liboxenmq
 #   oxen-core              -> liboxenmq, oxen-logging
@@ -25,6 +25,6 @@
 # dependencies above.
 
 oxen-encoding oxen-logging
-liboxenmq libquic libsession-util pyoxenc
-libsession-python lokinet oxen-core pyoxenmq session-router session-storage-server
-session-pysogs
+liboxenmq libquic pyoxenc
+libsession-util lokinet oxen-core pyoxenmq session-router session-storage-server
+libsession-python session-pysogs
