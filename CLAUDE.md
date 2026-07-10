@@ -57,9 +57,11 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
   next distro's suffix. A full (all-distro) run bumps `-N` and resets any `+M`.
 * **Domain names:** new/generated content uses `deb.session.foundation` (apt) and
   `builds.session.codes` (builds file server). Do NOT rewrite existing files'
-  older names — `deb.loki.network`/`deb.oxen.io` still work and must stay; the
-  docker registry `registry.oxen.rocks` (= `registry.session.codes`) is a
-  different service and must not be touched. The *only* mandatory rewrite is the
+  older names — `deb.loki.network`/`deb.oxen.io` still work and must stay. The
+  docker registry `registry.oxen.rocks` and `registry.session.codes` are the same
+  service: leave `registry.oxen.rocks` alone on its own (it's fine), but prefer
+  `registry.session.codes` in new code, or when you're already editing that part of
+  a file for another reason. The *only* mandatory rewrite is the
   dead `builds.lokinet.dev` → `builds.session.codes` (that's what `deb-migrate-hosts`
   is for).
 
