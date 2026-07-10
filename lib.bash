@@ -24,13 +24,43 @@ BUILDS_HOST="builds.session.codes"
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RESET=$'\e[0m'  C_ERR=$'\e[1;31m'  C_WARN=$'\e[33m'   C_OK=$'\e[1;32m'
     C_HDR=$'\e[1;36m' C_PKG=$'\e[1;35m'  C_VER=$'\e[1;36m'  C_DIM=$'\e[2m'  C_BOLD=$'\e[1m'
+    # Distro brand colours (24-bit): Debian red #D70A53, Ubuntu orange #E95420.
+    C_DEB=$'\e[1;38;2;215;10;83m' C_UBU=$'\e[1;38;2;233;84;32m'
 else
     C_RESET='' C_ERR='' C_WARN='' C_OK='' C_HDR='' C_PKG='' C_VER='' C_DIM='' C_BOLD=''
+    C_DEB='' C_UBU=''
 fi
 
-# Wrap text in a colour (helpers for call sites).
-cpkg() { printf '%s%s%s' "$C_PKG" "$*" "$C_RESET"; }   # package / repo names
+# Wrap text in a colour (helpers for call sites). cpkg colours each whitespace-
+# separated name: for a distro branch the "debian/"/"ubuntu/" prefix takes the
+# brand colour (Debian red / Ubuntu orange) and the codename is plain bold; other
+# names (repo names, bare codenames) use the default package colour.
+cpkg() {
+    local -a words; local w out="" sep=""
+    read -ra words <<< "$*"
+    for w in "${words[@]}"; do
+        case "$w" in
+            debian/*) out+="$sep$C_DEB${w%%/*}/$C_RESET$C_BOLD${w#*/}$C_RESET" ;;
+            ubuntu/*) out+="$sep$C_UBU${w%%/*}/$C_RESET$C_BOLD${w#*/}$C_RESET" ;;
+            *)        out+="$sep$C_PKG$w$C_RESET" ;;
+        esac
+        sep=" "
+    done
+    printf '%s' "$out"
+}
 cver() { printf '%s%s%s' "$C_VER" "$*" "$C_RESET"; }   # versions
+# Like cver but dims a trailing distro suffix (~debN / ~ubuntuNNNN, plus any +M
+# rebuild counter) so the shared base version stands out. The required digit after
+# deb/ubuntu keeps an upstream tag like ~debug or ~pre from matching.
+cvers() {
+    local v="$1"
+    if [[ "$v" =~ ~(deb|ubuntu)[0-9].*$ ]]; then
+        printf '%s%s%s%s%s%s' "$C_VER" "${v%"${BASH_REMATCH[0]}"}" "$C_RESET" \
+                              "$C_DIM" "${BASH_REMATCH[0]}" "$C_RESET"
+    else
+        printf '%s%s%s' "$C_VER" "$v" "$C_RESET"
+    fi
+}
 
 # Render TEXT as an OSC 8 terminal hyperlink to URL on a terminal; plain otherwise.
 hyperlink() {
