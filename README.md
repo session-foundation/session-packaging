@@ -61,7 +61,7 @@ etc. (the known codenames are the `version_suffix` keys in `build-distros.bash`;
 they're unique across debian/ubuntu). So `--only sid,trixie,forky` and
 `./deb-push oxen-mq sid,noble` both work.
 
-### `./deb-version-bump <repo> [--force] [<source-ref>]`
+### `./deb-version-bump <repo> [--force] [--create-missing] [<source-ref>]`
 New upstream release across **all** active distro branches. Reads the new version
 from `<source-ref>`'s top-level `CMakeLists.txt` (`project(... VERSION x.y.z)`);
 the package version becomes `<version>-1<suffix>`. `<source-ref>` defaults to
@@ -69,6 +69,16 @@ the package version becomes `<version>-1<suffix>`. `<source-ref>` defaults to
 queue → changelog → regenerate `control` → commit. Aborts (touching nothing)
 unless the new upstream version is greater than every branch's current version
 (`--force` overrides).
+
+If an active distro branch doesn't exist yet, it's created **as part of this
+release** rather than being a hard error. The existing branches are bumped first;
+then the new branch is forked off its now-updated family base (`debian/*` from
+`debian/sid`, `ubuntu/*` from the newest `ubuntu/*`) and given a debut changelog
+entry at the new version — exactly what `deb-add-distro` does after a release, so
+it debuts directly at the new version with no invented prior history. You're
+prompted first (after a builder-image check); `--create-missing` skips the prompt
+for non-interactive runs. A branch that can't be forked (no family base) is still
+a hard error pointing at `deb-add-distro`.
 
 ### `./deb-add-patch <repo> <commit> [<commit>...] -m "<msg>" [--only <glob>…]`
 Cherry-pick one or more **source** commits into the gbp patch queue across the

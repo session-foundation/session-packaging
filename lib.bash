@@ -200,6 +200,16 @@ family_base_exists() {
     esac
 }
 
+# The branch to fork <branch> from: debian/sid for debian/*, the newest existing
+# ubuntu/* for ubuntu/*. Prints it, or empty + return 1 if there's no base.
+base_for() {
+    case "$1" in
+        debian/*) branch_exists debian/sid && printf 'debian/sid\n' || return 1 ;;
+        ubuntu/*) newest_ubuntu ;;
+        *) return 1 ;;
+    esac
+}
+
 branch_exists() {
     git show-ref --verify --quiet "refs/heads/$1" ||
     git show-ref --verify --quiet "refs/remotes/origin/$1"
@@ -236,6 +246,99 @@ checkout_uptodate() {
         git merge --ff-only -q "origin/$b" ||
             die "$b has diverged from origin/$b; reconcile it manually"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# distro-branch creation (deb-add-distro, and deb-version-bump --create-missing)
+# ---------------------------------------------------------------------------
+# Refuse if the builder docker image for <codename> doesn't exist. The image name
+# pattern comes from <baseref>'s .drone.jsonnet distro_docker line.
+check_builder_image() {
+    local baseref="$1" codename="$2" line prefix suffix image
+    line="$(git show "$baseref:.drone.jsonnet" 2>/dev/null | grep -m1 'distro_docker *=')" ||
+        { warn "no distro_docker line in .drone.jsonnet; skipping builder-image check"; return 0; }
+    prefix="$(printf '%s' "$line" | sed -n "s/.*=[ \t]*'\([^']*\)'[ \t]*+[ \t]*distro.*/\1/p")"
+    suffix="$(printf '%s' "$line" | sed -n "s/.*distro[ \t]*+[ \t]*'\([^']*\)'.*/\1/p")"
+    [ -n "$prefix" ] || { warn "cannot parse distro_docker; skipping builder-image check"; return 0; }
+    image="$prefix$codename$suffix"
+    msg "Checking builder image: $image"
+    if command -v docker >/dev/null 2>&1; then
+        docker manifest inspect "$image" >/dev/null 2>&1 && return 0
+        die "builder image '$image' not found — build it in ../session-docker-ci first"
+    elif command -v skopeo >/dev/null 2>&1; then
+        skopeo inspect "docker://$image" >/dev/null 2>&1 && return 0
+        die "builder image '$image' not found — build it in ../session-docker-ci first"
+    else
+        warn "neither docker nor skopeo available; cannot verify builder image $image"
+    fi
+}
+
+# Create a new distro branch <newbranch> by forking <base> (default: its family
+# base via base_for) and applying the structural edits: .drone.jsonnet distro,
+# debian/gbp.conf debian-branch + dist, and origin tracking (so a later bare `git
+# push` targets origin/<newbranch>, which doesn't exist yet, rather than the base).
+# Leaves the branch checked out with those two files STAGED but not committed, and
+# touches neither the changelog nor debian/control — the caller sets the version
+# and commits (deb-add-distro: a same-version entry; deb-version-bump: the
+# new-version bump). Sets CREATED_BASE / CREATED_BASEREF. The caller is responsible
+# for the builder-image check (via check_builder_image) beforehand.
+create_distro_branch() {
+    local newbranch="$1" base="${2:-}" family codename
+    family="${newbranch%%/*}"; codename="${newbranch#*/}"
+    case "$family" in debian|ubuntu) ;; *) die "cannot create '$newbranch': not a debian/ or ubuntu/ branch" ;; esac
+    [ -n "${version_suffix[$newbranch]:-}" ] ||
+        die "no version suffix defined for '$newbranch' in build-distros.bash"
+    [ -n "$base" ] || base="$(base_for "$newbranch")" || die "$REPO has no base branch to fork $newbranch from"
+    CREATED_BASE="$base"
+    CREATED_BASEREF="$(branch_ref "$base")"
+    msg "Forking $(cpkg "$newbranch") from $(cpkg "$base")"
+
+    git checkout -q --no-track -b "$newbranch" "$CREATED_BASEREF"
+    git config "branch.$newbranch.remote" origin
+    git config "branch.$newbranch.merge" "refs/heads/$newbranch"
+
+    sed -i "s/^local distro = '[^']*';/local distro = '$codename';/" .drone.jsonnet
+    grep -q "^local distro = '$codename';" .drone.jsonnet ||
+        die "failed to update 'local distro' in .drone.jsonnet"
+
+    sed -i -e "s#^debian-branch = .*#debian-branch = $newbranch#" \
+           -e "s#^dist = .*#dist = $codename#" debian/gbp.conf
+    grep -q "^debian-branch = $newbranch\$" debian/gbp.conf ||
+        die "failed to update debian-branch in debian/gbp.conf"
+    grep -q "^dist = $codename\$" debian/gbp.conf ||
+        die "failed to update dist in debian/gbp.conf"
+
+    git add .drone.jsonnet debian/gbp.conf
+}
+
+# Strip branch <2>'s ~suffix off version <1>, e.g. (1.3.0-2~deb13, debian/trixie)
+# -> 1.3.0-2. A branch with no suffix (debian/sid) returns the version unchanged.
+strip_suffix() {
+    local v="$1" s="${version_suffix[$2]:-}"
+    [ -n "$s" ] && printf '%s\n' "${v%"$s"}" || printf '%s\n' "$v"
+}
+
+# Fork <newbranch> off <base> (default: its family base via base_for) and give it a
+# debut changelog entry at the base's *current* version + <newbranch>'s ~suffix,
+# distribution = codename. This is the whole of deb-add-distro, and is what
+# deb-version-bump uses to fork a brand-new distro off a just-bumped base (so it
+# debuts at the new release with no invented history). deb-version-bump passes an
+# explicit <base> pinned to a pre-run branch, so forking several new distros at
+# once never chains one off another. Commits; sets CREATED_VERSION. The caller must
+# have run check_builder_image first.
+create_distro_release() {
+    local newbranch="$1" base="${2:-}" codename basever title
+    codename="${newbranch#*/}"
+    create_distro_branch "$newbranch" "$base"   # sets CREATED_BASE/CREATED_BASEREF; stages drone/gbp
+    basever="$(strip_suffix "$(changelog_version "$CREATED_BASEREF")" "$CREATED_BASE")"
+    CREATED_VERSION="$basever${version_suffix[$newbranch]}"
+    title="${codename^} deb"
+    msg "  changelog: $(cver "$CREATED_VERSION") ($codename)"
+    filter_dch dch --newversion "$CREATED_VERSION" --distribution "$codename" \
+        --force-distribution --force-bad-version "$title"
+    regen_control
+    git add .drone.jsonnet debian/gbp.conf debian/changelog debian/control
+    git commit -q -m "$title"
 }
 
 # ---------------------------------------------------------------------------
@@ -427,6 +530,9 @@ save_state() {
         printf 'current_phase=%s\n'  "$(_sq "${2:-}")"
         printf 'target=%s\n'         "$(_sq "${TARGET:-}")"
         printf 'partial=%s\n'        "$(_sq "${PARTIAL:-0}")"
+        printf 'missing=%s\n'        "$(_sq "${MISSING[*]:-}")"
+        printf 'ubuntu_base=%s\n'    "$(_sq "${UBUNTU_BASE:-}")"
+        printf 'nobump=%s\n'         "$(_sq "${NOBUMP:-0}")"
     } > "$STATE_FILE"
 }
 
@@ -444,11 +550,14 @@ begin_or_resume() {
     COMMITS=()
     TARGET=""
     PARTIAL=0
+    MISSING=()
+    UBUNTU_BASE=""
+    NOBUMP=0
     [ -f "$STATE_FILE" ] || return 0
 
     local operation='' version_base='' source_ref='' commit_msg='' \
           commits='' completed='' current_branch='' current_phase='' \
-          target='' partial=''
+          target='' partial='' missing='' ubuntu_base='' nobump=''
     # shellcheck disable=SC1090
     source "$STATE_FILE"
     [ "$operation" = "$op" ] || die \
@@ -465,7 +574,10 @@ Resume it by re-running its command, or abandon it with:
     CURRENT_PHASE="$current_phase"
     TARGET="$target"
     PARTIAL="${partial:-0}"
+    UBUNTU_BASE="$ubuntu_base"
+    NOBUMP="${nobump:-0}"
     read -ra COMMITS <<< "$commits"
+    read -ra MISSING <<< "$missing"
 }
 
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }

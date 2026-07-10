@@ -2,16 +2,34 @@
 #
 # deb-version-bump — new upstream release across all active distro branches.
 #
-# Usage: ./deb-version-bump <repo> [--force] [<source-ref>]
+# Usage: ./deb-version-bump <repo> [--force] [--create-missing] [--version <ver>] [<source-ref>]
 #
-#   <repo>         managed checkout directory (e.g. oxen-mq)
-#   <source-ref>   branch/tag to merge as the new upstream (default: origin/stable)
-#   --force        skip the "new version must be greater" guard
+#   <repo>            managed checkout directory (e.g. oxen-mq)
+#   <source-ref>      branch/tag to merge as the new upstream (default: origin/stable)
+#   --force           skip the "new version must be greater" guard
+#   --create-missing  answer the confirmation "yes, all" non-interactively (bump
+#                     every existing branch and create any missing distro branches)
+#   --version <ver>   use <ver> as the upstream version instead of reading it from
+#                     CMakeLists.txt (the source ref is still what gets merged). Give
+#                     the upstream part only — the -1 revision and per-distro ~suffix
+#                     are added. For pre-releases (1.2.0~pre20240724, sorts below the
+#                     eventual 1.2.0) or retractions (4.1.1+really3.31.6, sorts above
+#                     a bad 4.1.1 while actually shipping 3.31.6).
 #
-# The new version is read from <source-ref>'s top-level CMakeLists.txt; the
-# package version is <version>-1 plus the per-distro suffix. For each branch it
-# merges upstream, rebases + re-exports the patch queue, writes the changelog and
-# regenerates debian/control, and commits. It does NOT push (use deb-push).
+# The new version is read from <source-ref>'s top-level CMakeLists.txt (or --version);
+# the package version is <version>-1 plus the per-distro suffix. It first shows the new
+# package version and each branch's current version, then asks for confirmation
+# before doing anything (this is a slow, hard-to-reverse operation). Answer:
+#   y  bump every existing branch, and create + debut any new distro branches
+#   e  bump only the branches that already exist (skip the new ones)  [if any]
+#   n  abort, touching nothing
+# Then for each branch it merges upstream, rebases + re-exports the patch queue,
+# writes the changelog and regenerates debian/control, and commits. It does NOT
+# push (use deb-push).
+#
+# A distro branch that doesn't exist yet is forked from its family base (debian/*
+# from debian/sid; ubuntu/* from the newest ubuntu/*) *after* that base is bumped,
+# so it debuts directly at the new release — no throwaway current-version build.
 #
 # On a merge/patch conflict it stops with resume instructions; fix it and re-run
 # the same command to continue from where it left off.
@@ -19,6 +37,47 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
 INVOCATION="$0 $*"
+
+# Classify active distro branches that don't exist yet: CREATABLE ones can be
+# forked (family base present + a defined suffix); any that can't are fatal (abort
+# with the deb-add-distro hint). Pins UBUNTU_BASE to the newest *pre-run* ubuntu/*
+# so forking several new ubuntu distros at once never chains one off another.
+CREATABLE=()
+classify_missing() {
+    local b; local -a fatal=()
+    CREATABLE=()
+    UBUNTU_BASE="$(newest_ubuntu 2>/dev/null || true)"
+    for b in "${distros[@]}"; do
+        branch_exists "$b" && continue
+        if family_base_exists "$b" && [ -n "${version_suffix[$b]:-}" ]; then
+            CREATABLE+=("$b")
+        else
+            fatal+=("$b")
+        fi
+    done
+    [ "${#fatal[@]}" -eq 0 ] || die "missing branch(es) with no base to fork from: ${fatal[*]}
+create them first with:  ./deb-add-distro $REPO <branch>"
+}
+
+# Announce the new package version and list each active branch's current package
+# version (or "none" for one that doesn't exist yet). Reads VERSION_BASE / SRCNOTE.
+show_bump_status() {
+    local b cur pad w=0
+    for b in "${distros[@]}"; do [ "${#b}" -gt "$w" ] && w="${#b}"; done
+    # trailing dim "~…" hints that non-sid branches append their ~debN/~ubuntuNNNN.
+    msg "New package version: $(cver "$VERSION_BASE")$C_DIM~…$C_RESET  ($SRCNOTE)"
+    msg "Current package versions:"
+    for b in "${distros[@]}"; do
+        # cpkg adds colour escapes, so pad by the plain name's width separately.
+        pad=$(( w - ${#b} ))
+        if branch_exists "$b"; then
+            cur="$(changelog_version "$(branch_ref "$b")")"
+            msg "$(printf '  %s%*s  %s' "$(cpkg "$b")" "$pad" "" "$(cvers "${cur:-?}")")"
+        else
+            msg "$(printf '  %s%*s  %s(none)%s' "$(cpkg "$b")" "$pad" "" "$C_DIM" "$C_RESET")"
+        fi
+    done
+}
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
@@ -29,15 +88,21 @@ begin_or_resume version-bump
 
 if [ "$RESUMING" = 0 ]; then
     FORCE=0
+    CREATE_MISSING_FLAG=0
+    VERSION_OVERRIDE=""
     SOURCE_REF="origin/stable"
     got_ref=0
-    for a in "$@"; do
-        case "$a" in
+    while [ $# -gt 0 ]; do
+        case "$1" in
             --force) FORCE=1 ;;
+            --create-missing) CREATE_MISSING_FLAG=1 ;;
+            --version) shift; [ $# -gt 0 ] || die "--version requires a version"; VERSION_OVERRIDE="$1" ;;
+            --version=*) VERSION_OVERRIDE="${1#--version=}" ;;
             -h|--help) usage 0 ;;
-            -*) die "unknown option: $a" ;;
-            *) [ "$got_ref" = 0 ] || die "unexpected extra argument: $a"; SOURCE_REF="$a"; got_ref=1 ;;
+            -*) die "unknown option: $1" ;;
+            *) [ "$got_ref" = 0 ] || die "unexpected extra argument: $1"; SOURCE_REF="$1"; got_ref=1 ;;
         esac
+        shift
     done
 
     require_clean_tree
@@ -51,15 +116,28 @@ if [ "$RESUMING" = 0 ]; then
             die "source ref '$SOURCE_REF' not found"
         fi
     fi
-    require_branches
-
-    NEW_UPSTREAM="$(parse_cmake_version "$SOURCE_REF")"
+    # Version: from --version if given (the upstream part only — the -1 revision and
+    # per-distro ~suffix are added), else parsed from the source ref's CMakeLists.
+    if [ -n "$VERSION_OVERRIDE" ]; then
+        case "$VERSION_OVERRIDE" in
+            *-*) die "--version takes the upstream version only (e.g. 1.2.0~pre20240724 or 4.1.1+really3.31.6); the -1 revision and per-distro ~suffix are added automatically" ;;
+        esac
+        NEW_UPSTREAM="$VERSION_OVERRIDE"
+        SRCNOTE="version set manually; merging $SOURCE_REF"
+    else
+        NEW_UPSTREAM="$(parse_cmake_version "$SOURCE_REF")"
+        SRCNOTE="from $SOURCE_REF"
+    fi
     VERSION_BASE="$NEW_UPSTREAM-1"
     COMMIT_MSG="$NEW_UPSTREAM release"
-    msg "New upstream version: $NEW_UPSTREAM  (from $SOURCE_REF)"
+    show_bump_status                       # 1) old + new versions
 
+    classify_missing                       # abort now on any branch that can't be forked
+
+    # Version guard on the branches that exist (a debut branch has nothing to guard).
     if [ "$FORCE" = 0 ]; then
         for b in "${distros[@]}"; do
+            branch_exists "$b" || continue
             cur="$(changelog_version "$(branch_ref "$b")")"
             if ! dpkg --compare-versions "$NEW_UPSTREAM" gt "$(upstream_of "$cur")"; then
                 die "version guard: $b is already at $cur (upstream $(upstream_of "$cur")); \
@@ -68,11 +146,77 @@ new upstream $NEW_UPSTREAM is not greater. Use --force to override."
         done
     fi
 
+    # 2)+3) single confirmation before this slow, hard-to-reverse operation. With
+    # debut branches there's a third choice ([e]) to bump only what exists and skip
+    # the new ones. --create-missing answers "yes, all" non-interactively. MISSING
+    # ends up holding the branches we'll actually create (empty = create none).
+    MISSING=()
+    if [ "${#CREATABLE[@]}" -gt 0 ]; then
+        msg ""
+        msg "New distro branch(es) that would debut at $(cver "$VERSION_BASE")$C_DIM~…$C_RESET:"
+        for b in "${CREATABLE[@]}"; do msg "  $(cpkg "$b")  (fork from $(cpkg "$(base_for "$b")"))"; done
+        if [ "${CREATE_MISSING_FLAG:-0}" = 1 ]; then
+            MISSING=("${CREATABLE[@]}")
+        elif [ -t 0 ]; then
+            printf '%sProceed?%s  [y] bump all + create the above   [e] existing branches only   [N] abort: ' \
+                "$C_BOLD" "$C_RESET" >&2
+            read -r ans || true
+            case "$ans" in
+                y|Y|yes|YES|Yes)       MISSING=("${CREATABLE[@]}") ;;
+                e|E|existing|EXISTING) MISSING=() ;;
+                *)                     die "aborted" ;;
+            esac
+        else
+            die "not a terminal; pass --create-missing to proceed (bump all + create the new branch(es))"
+        fi
+    else
+        if [ "${CREATE_MISSING_FLAG:-0}" = 1 ]; then
+            :
+        elif [ -t 0 ]; then
+            confirm "Proceed with the version bump?" || die "aborted"
+        else
+            die "not a terminal; pass --create-missing to proceed non-interactively"
+        fi
+    fi
+
+    # Fail fast: every new branch's builder image must exist before we start.
+    for b in "${MISSING[@]}"; do
+        check_builder_image "$(branch_ref "$(base_for "$b")")" "${b#*/}"
+    done
+
+    # Order/restrict the run via TARGET: existing branches first, then any debut
+    # branches (forked off their *bumped* base, so they debut at the new release
+    # rather than carrying a fabricated prior entry). An [e]xisting-only choice
+    # leaves MISSING empty, so TARGET is just the branches that exist and
+    # run_multibranch never touches the skipped debuts. MISSING marks which TARGET
+    # entries proc_bump forks-vs-bumps.
+    if [ "${#CREATABLE[@]}" -gt 0 ]; then
+        order=()
+        for b in "${distros[@]}"; do branch_exists "$b" && order+=("$b"); done
+        order+=("${MISSING[@]}")
+        TARGET="${order[*]}"
+    fi
+
     save_state "" ""
 fi
 
 proc_bump() {
     local b="$1"
+    # A brand-new active branch: fork it off its (already-bumped) family base and
+    # give it a debut changelog entry at the new version + its ~suffix — the same
+    # thing deb-add-distro does after a release. No merge/patch-queue work of its
+    # own (it inherits the base's), so nothing conflict-prone happens here. ubuntu/*
+    # forks off UBUNTU_BASE (the newest pre-run ubuntu, now bumped); debian/* off
+    # debian/sid.
+    if in_list "$b" "${MISSING[*]:-}"; then
+        local base
+        case "$b" in ubuntu/*) base="$UBUNTU_BASE" ;; *) base="$(base_for "$b")" ;; esac
+        if git show-ref --verify --quiet "refs/heads/$b"; then   # leftover partial create
+            git checkout -q -f "$base"; git branch -q -D "$b"
+        fi
+        create_distro_release "$b" "$base"
+        return
+    fi
     if [ -z "$RESUME_PHASE" ]; then
         checkout_uptodate "$b"
         gbp pq import --force
