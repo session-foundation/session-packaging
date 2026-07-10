@@ -9,8 +9,9 @@
 #
 #   <repo>         managed checkout directory (e.g. liboxenmq)
 #   -m MSG         changelog/commit message (default: "Rebuild")
-#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/forky
-#                  or 'debian/*'). Repeatable and comma-separated.
+#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/forky,
+#                  a bare codename like forky, or 'debian/*'). Repeatable and
+#                  comma-separated.
 #
 # Version: a full run bumps the debian revision (<upstream>-<N+1><suffix>); an
 # --only run appends/increments a +M (<version>+M) and leaves -N alone, so
@@ -35,8 +36,8 @@ if [ "$RESUMING" = 0 ]; then
         case "$1" in
             -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
             -m*) COMMIT_MSG="${1#-m}" ;;
-            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; IFS=, read -ra _g <<< "$1"; only_globs+=("${_g[@]}") ;;
-            --only=*) IFS=, read -ra _g <<< "${1#--only=}"; only_globs+=("${_g[@]}") ;;
+            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "$1") ;;
+            --only=*) mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "${1#--only=}") ;;
             -h|--help) usage 0 ;;
             *) die "unexpected argument: $1" ;;
         esac

@@ -8,9 +8,9 @@
 #   <repo>         managed checkout directory (e.g. liboxenmq)
 #   <commit>       one or more commit-ish to cherry-pick into the patch queue
 #   -m MSG         changelog/commit message (required)
-#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/sid or
-#                  'debian/*'), for a fix only some distros need. Repeatable and
-#                  comma-separated.
+#   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/sid,
+#                  a bare codename like sid, or 'debian/*'), for a fix only some
+#                  distros need. Repeatable and comma-separated.
 #
 # For each branch it imports the patch queue, cherry-picks the commit(s), exports
 # the patches back, updates the changelog, regenerates debian/control, and commits
@@ -43,8 +43,8 @@ if [ "$RESUMING" = 0 ]; then
         case "$1" in
             -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
             -m*) COMMIT_MSG="${1#-m}" ;;
-            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; IFS=, read -ra _g <<< "$1"; only_globs+=("${_g[@]}") ;;
-            --only=*) IFS=, read -ra _g <<< "${1#--only=}"; only_globs+=("${_g[@]}") ;;
+            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "$1") ;;
+            --only=*) mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "${1#--only=}") ;;
             -h|--help) usage 0 ;;
             -*) die "unknown option: $1" ;;
             *) commit_args+=("$1") ;;

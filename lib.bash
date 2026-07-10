@@ -261,6 +261,31 @@ bump_plus() {
 # Suffix (~debN / ~ubuntuNNNN) for a branch, from build-distros.bash.
 suffix_for() { printf '%s\n' "${version_suffix[$1]:-}"; }
 
+# Expand a bare distro codename (e.g. 'sid', 'trixie', 'noble') to its full
+# 'family/codename' branch. The known codenames are the codename halves of the
+# version_suffix keys (build-distros.bash); they are unique across debian/ubuntu,
+# so the mapping is unambiguous. A token that already contains '/' (a full branch,
+# or a glob like 'debian/*') or a bare token matching no known codename is returned
+# unchanged, so downstream glob-matching and error reporting are unaffected.
+expand_distro() {
+    local tok="$1" k
+    case "$tok" in */*) printf '%s\n' "$tok"; return ;; esac
+    for k in "${!version_suffix[@]}"; do
+        [ "${k#*/}" = "$tok" ] && { printf '%s\n' "$k"; return; }
+    done
+    printf '%s\n' "$tok"
+}
+
+# Split comma-separated distro specs (any number of args) and expand each bare
+# codename via expand_distro. Prints one expanded token per line.
+expand_distro_spec() {
+    local arg t
+    for arg in "$@"; do
+        IFS=, read -ra _toks <<< "$arg"
+        for t in "${_toks[@]}"; do [ -n "$t" ] && expand_distro "$t"; done
+    done
+}
+
 # Changelog distribution field for a branch: the codename, except sid -> unstable.
 changelog_dist() {
     if [ "$1" = debian/sid ]; then printf 'unstable\n'; else printf '%s\n' "${1#*/}"; fi

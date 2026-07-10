@@ -31,7 +31,7 @@ POLL_STAGE="${DEB_CASCADE_STAGE_POLL:-15}"   # /staging fallback re-check interv
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
-branch="$1"; shift
+branch="$(expand_distro "$1")"; shift
 only=() skip=()
 while [ $# -gt 0 ]; do
     case "$1" in

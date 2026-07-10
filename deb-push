@@ -6,10 +6,11 @@
 #
 #   <repo>          managed checkout directory (e.g. oxen-mq)
 #   <branch-glob>   which branches to push; globs match against the active distro
-#                   list, e.g. debian/sid, 'debian/*', 'ubuntu/*'. Quote globs so
-#                   the shell doesn't expand them. Multiple are accepted either
-#                   space- or comma-separated (debian/sid debian/forky, or
-#                   debian/sid,debian/forky). Default: 'debian/*' 'ubuntu/*'.
+#                   list, e.g. debian/sid, 'debian/*', 'ubuntu/*'. A bare codename
+#                   (sid, trixie, noble, …) expands to its full branch. Quote globs
+#                   so the shell doesn't expand them. Multiple are accepted either
+#                   space- or comma-separated (debian/sid forky, or sid,forky).
+#                   Default: 'debian/*' 'ubuntu/*'.
 #
 # If any glob matches no active branch, nothing is pushed. Before pushing, a
 # dependency pre-check verifies that every "ours" build-dependency of each branch
@@ -24,9 +25,9 @@ case "$1" in -h|--help) usage 0 ;; esac
 repo="$1"; shift
 resolve_repo "$repo"
 
-# Accept space-separated and comma-separated globs (comma matches --only/--skip).
-globs=()
-for a in "$@"; do IFS=, read -ra _g <<< "$a"; globs+=("${_g[@]}"); done
+# Accept space- and comma-separated globs, and bare codenames (sid, trixie, …),
+# which expand_distro_spec turns into full branches.
+mapfile -t globs < <(expand_distro_spec "$@")
 [ "${#globs[@]}" -gt 0 ] || globs=('debian/*' 'ubuntu/*')
 
 # Expand globs against the active distro list; fail fast on a non-matching glob.

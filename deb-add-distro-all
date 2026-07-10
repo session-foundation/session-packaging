@@ -17,7 +17,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
-branch="$1"; shift
+branch="$(expand_distro "$1")"; shift
 only=("$@")
 case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
 

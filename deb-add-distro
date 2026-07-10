@@ -46,7 +46,7 @@ check_builder_image() {
 
 [ $# -eq 2 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
-repo="$1"; newbranch="$2"
+repo="$1"; newbranch="$(expand_distro "$2")"
 resolve_repo "$repo"
 
 family="${newbranch%%/*}"

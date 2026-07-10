@@ -55,6 +55,12 @@ pulls its dependencies from is set by `local repo_suffix` in that branch's
 All are run from this directory; the first argument is always the checkout dir.
 None of them push (except `deb-push`); each prints the push command to run next.
 
+Anywhere a branch or `--only`/glob is expected, a **bare codename** works as
+shorthand for its full branch: `sid` → `debian/sid`, `noble` → `ubuntu/noble`,
+etc. (the known codenames are the `version_suffix` keys in `build-distros.bash`;
+they're unique across debian/ubuntu). So `--only sid,trixie,forky` and
+`./deb-push oxen-mq sid,noble` both work.
+
 ### `./deb-version-bump <repo> [--force] [<source-ref>]`
 New upstream release across **all** active distro branches. Reads the new version
 from `<source-ref>`'s top-level `CMakeLists.txt` (`project(... VERSION x.y.z)`);
@@ -86,8 +92,8 @@ changelog entry (and asks for confirmation if there's more than one).
 
 ### `./deb-push <repo> [<branch-glob>...]`
 Push branches to origin (triggering CI). Globs match the active distro list, e.g.
-`debian/sid`, `'debian/*'`, `'ubuntu/*'` (quote them). Give several space- or
-comma-separated (`debian/sid debian/forky` or `debian/sid,debian/forky`). No
+`debian/sid`, `'debian/*'`, `'ubuntu/*'` (quote them), or bare codenames. Give
+several space- or comma-separated (`debian/sid forky` or `sid,forky`). No
 argument = all. If any glob matches nothing, nothing is pushed. Before pushing it runs a **dependency
 pre-check**: for each branch it verifies every Session-family build-dependency is
 available at the required version in that branch's target reprepro repo (parsed
