@@ -32,6 +32,9 @@ done < "$SP_ROOT/build-order"
 created=() skipped=() missing=() nobase=() failed=()
 for r in "${repos[@]}"; do
     want "$r" || continue
+    if repo_skips_branch "$r" "$branch"; then
+        msg "[$(cpkg "$r")] excluded from $branch — $C_DIM skipping$C_RESET"; skipped+=("$r"); continue
+    fi
     if [ ! -d "$SP_ROOT/$r/.git" ]; then
         warn "repo '$r' not cloned — skipping"; missing+=("$r"); continue
     fi

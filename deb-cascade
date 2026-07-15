@@ -76,7 +76,11 @@ for line in "${steps[@]}"; do
     stepno=$((stepno + 1))
     read -ra all <<< "$line"
     repos=()
-    for r in "${all[@]}"; do want "$r" && repos+=("$r"); done
+    for r in "${all[@]}"; do
+        want "$r" || continue
+        repo_skips_branch "$r" "$branch" && { msg "[$(cpkg "$r")] excluded from $branch — $C_DIM skipping$C_RESET"; continue; }
+        repos+=("$r")
+    done
     [ "${#repos[@]}" -gt 0 ] || continue
 
     msg ""

@@ -183,6 +183,11 @@ Sourced by all tools. Defines:
 * `version_suffix` — every known distro's version suffix (includes old/future
   entries as a handy reference).
 * `distros` — the branches the tools currently act on.
+* `skip_distros` — per-repo opt-outs: an associative array (keyed by checkout dir,
+  values space-separated **full** branch names) of distro branches a given repo
+  does *not* build. The tools drop these from `distros` for that repo, so
+  `deb-version-bump` won't build or recreate them and `deb-push` won't push them.
+  Existing branches just go stale (delete them by hand if you want them gone).
 
 ## `build-order`
 

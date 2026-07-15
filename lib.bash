@@ -156,6 +156,23 @@ resolve_repo() {
     REPO="$r"
     GITDIR="$(cd "$(git rev-parse --git-dir)" && pwd)"
     STATE_FILE="$GITDIR/session-pkg-state"
+    # Drop this repo's opted-out distro branches (skip_distros in build-distros.bash)
+    # from the active set, so every single-repo tool ignores them.
+    local b; local -A drop=(); local -a kept=()
+    for b in ${skip_distros[$REPO]:-}; do drop[$b]=1; done
+    if [ "${#drop[@]}" -gt 0 ]; then
+        for b in "${distros[@]}"; do [ -n "${drop[$b]:-}" ] || kept+=("$b"); done
+        distros=("${kept[@]}")
+    fi
+}
+
+# True if <repo> opts out of building <branch> (skip_distros in build-distros.bash).
+# For the cross-repo tools, which iterate repos for one branch and so don't go
+# through resolve_repo's filtering of `distros`.
+repo_skips_branch() {
+    local b
+    for b in ${skip_distros[$1]:-}; do [ "$b" = "$2" ] && return 0; done
+    return 1
 }
 
 # Does a git operation (merge/cherry-pick/rebase) still need resolving?
