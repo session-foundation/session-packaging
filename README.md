@@ -80,12 +80,15 @@ prompted first (after a builder-image check); `--create-missing` skips the promp
 for non-interactive runs. A branch that can't be forked (no family base) is still
 a hard error pointing at `deb-add-distro`.
 
-### `./deb-add-patch <repo> <commit> [<commit>...] -m "<msg>" [--only <glob>…]`
+### `./deb-add-patch <repo> <commit> [<commit>...] -m "<msg>" [--only <glob>…] [--no-bump]`
 Cherry-pick one or more **source** commits into the gbp patch queue across the
 active branches, with a `-N` revision bump. `--only <glob>[,…]` restricts to
 matching branches for a fix only some distros need; a partial run appends/bumps a
 `+M` (leaving `-N` alone, so distro-upgrade ordering is preserved) instead of
-bumping `-N`.
+bumping `-N`. `--no-bump` applies the patch with **no** version bump or changelog
+entry at all (takes no `-m`) — use it when the current version was never
+built/published, so the fix needs no new version to distinguish it (e.g. fixing a
+build error on the distros whose build failed); combine with `--only` to target them.
 
 ### `./deb-rebuild <repo> [-m "<msg>"] [--only <glob>…]`
 No-change rebuild bump (Debian binNMU-style) — no source or packaging change,

@@ -10,22 +10,28 @@
 # changelog-free propagation).
 #
 # Usage: ./deb-add-patch <repo> <commit> [<commit>...] -m "<message>" [--only <glob>[,…]]...
+#        ./deb-add-patch <repo> <commit> [<commit>...] --no-bump [--only <glob>[,…]]...
 #
 #   <repo>         managed checkout directory (e.g. liboxenmq)
 #   <commit>       one or more commit-ish to cherry-pick into the patch queue
-#   -m MSG         changelog/commit message (required)
+#   -m MSG         changelog/commit message (required unless --no-bump)
 #   --only <glob>  restrict to distro branches matching <glob> (e.g. debian/sid,
 #                  a bare codename like sid, or 'debian/*'), for a fix only some
 #                  distros need. Repeatable and comma-separated.
+#   --no-bump      apply the patch(es) with NO version bump and NO changelog entry
+#                  (just re-export the patch queue and commit). Use when the current
+#                  version was never built/published, so the fix needs no new version
+#                  to distinguish it — e.g. fixing a build error on the distros whose
+#                  build failed. Takes no -m; combine with --only to target them.
 #
 # For each branch it imports the patch queue, cherry-picks the commit(s), exports
-# the patches back, updates the changelog, regenerates debian/control, and commits
-# (no push; use deb-push).
+# the patches back, and commits. Unless --no-bump, it then updates the changelog,
+# regenerates debian/control, and re-commits (no push; use deb-push).
 #
 # Version: a full run bumps the debian revision (<upstream>-<N+1><suffix>). An
 # --only run instead appends/increments a +M (<version>+M) and leaves -N alone —
 # a per-distro -N bump would outrank newer distros' packages and break
-# distro-upgrade ordering.
+# distro-upgrade ordering. --no-bump changes the version not at all.
 #
 # On a cherry-pick conflict it stops with resume instructions; fix it and re-run
 # the same command to continue.
@@ -43,12 +49,14 @@ begin_or_resume add-patch
 
 if [ "$RESUMING" = 0 ]; then
     COMMIT_MSG=""
+    NOBUMP=0
     commit_args=()
     only_globs=()
     while [ $# -gt 0 ]; do
         case "$1" in
             -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
             -m*) COMMIT_MSG="${1#-m}" ;;
+            --no-bump) NOBUMP=1 ;;
             --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "$1") ;;
             --only=*) mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "${1#--only=}") ;;
             -h|--help) usage 0 ;;
@@ -58,15 +66,20 @@ if [ "$RESUMING" = 0 ]; then
         shift
     done
     [ "${#commit_args[@]}" -ge 1 ] || die "at least one commit to cherry-pick is required"
-    [ -n "$COMMIT_MSG" ] || die "a changelog message (-m) is required"
+    if [ "$NOBUMP" = 1 ]; then
+        [ -z "$COMMIT_MSG" ] || die "--no-bump writes no changelog entry, so it doesn't take -m"
+    else
+        [ -n "$COMMIT_MSG" ] || die "a changelog message (-m) is required"
+    fi
 
     require_clean_tree
     msg "Fetching origin..."
     git fetch -q origin
 
-    # --only: restrict to matching branches and use a +M bump (leaves -N intact).
+    # --only: restrict to matching branches. In bump mode use a +M bump (leaves -N
+    # intact); --no-bump leaves the version untouched entirely.
     if [ "${#only_globs[@]}" -gt 0 ]; then
-        PARTIAL=1
+        [ "$NOBUMP" = 1 ] || PARTIAL=1
         hits=""
         for g in "${only_globs[@]}"; do
             m=""
@@ -86,7 +99,9 @@ if [ "$RESUMING" = 0 ]; then
         COMMITS+=("$h")
     done
 
-    if [ "${PARTIAL:-0}" = 1 ]; then
+    if [ "$NOBUMP" = 1 ]; then
+        msg "Patching (no bump) $(cpkg "${TARGET:-${distros[*]}}"): ${#COMMITS[@]} commit(s)"
+    elif [ "${PARTIAL:-0}" = 1 ]; then
         msg "Patching (--only) $(cpkg "$TARGET"): +M bump, ${#COMMITS[@]} commit(s)"
     else
         cur="$(changelog_version "$(branch_ref debian/sid)")"
@@ -109,7 +124,8 @@ proc_patch() {
         ensure_resolved "$b" "$RESUME_PHASE"
     fi
     gbp pq export --commit
-    finalize_branch "$b"
+    # --no-bump: the exported-patch commit is the whole change; no changelog/version.
+    [ "${NOBUMP:-0}" = 1 ] || finalize_branch "$b"
 }
 
 run_multibranch proc_patch
