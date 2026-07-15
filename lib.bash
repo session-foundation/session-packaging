@@ -49,17 +49,18 @@ cpkg() {
     printf '%s' "$out"
 }
 cver() { printf '%s%s%s' "$C_VER" "$*" "$C_RESET"; }   # versions
-# Like cver but dims a trailing distro suffix (~debN / ~ubuntuNNNN, plus any +M
-# rebuild counter) so the shared base version stands out. The required digit after
-# deb/ubuntu keeps an upstream tag like ~debug or ~pre from matching.
+# Like cver but dims a trailing distro suffix (~debN / ~ubuntuNNNN) so the shared
+# base version stands out. A +M rebuild counter keeps the base colour (not dimmed):
+# it marks a real per-distro difference, so it should stand out from the suffix.
+# The required digit after deb/ubuntu keeps an upstream tag like ~debug or ~pre
+# from matching.
 cvers() {
-    local v="$1"
-    if [[ "$v" =~ ~(deb|ubuntu)[0-9].*$ ]]; then
-        printf '%s%s%s%s%s%s' "$C_VER" "${v%"${BASH_REMATCH[0]}"}" "$C_RESET" \
-                              "$C_DIM" "${BASH_REMATCH[0]}" "$C_RESET"
-    else
-        printf '%s%s%s' "$C_VER" "$v" "$C_RESET"
-    fi
+    local v="$1" plus="" suf=""
+    if [[ "$v" =~ ([+][0-9]+)$ ]]; then plus="${BASH_REMATCH[1]}"; v="${v%"$plus"}"; fi
+    if [[ "$v" =~ ~(deb|ubuntu)[0-9].*$ ]]; then suf="${BASH_REMATCH[0]}"; v="${v%"$suf"}"; fi
+    printf '%s%s%s' "$C_VER" "$v" "$C_RESET"
+    [ -n "$suf" ]  && printf '%s%s%s' "$C_DIM" "$suf" "$C_RESET"
+    [ -n "$plus" ] && printf '%s%s%s' "$C_VER" "$plus" "$C_RESET"
 }
 
 # Render TEXT as an OSC 8 terminal hyperlink to URL on a terminal; plain otherwise.
