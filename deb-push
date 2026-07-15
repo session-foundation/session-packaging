@@ -15,8 +15,9 @@
 #
 # If any glob matches no active branch, nothing is pushed. Before pushing, a
 # dependency pre-check verifies that every "ours" build-dependency of each branch
-# is available at the required version in that branch's target reprepro repo
-# (parsed from its .drone.jsonnet); if any is missing, nothing is pushed.
+# is available at the required version in that branch's target reprepro repo, for
+# every architecture that branch builds (its .drone.jsonnet deb_pipeline debarches,
+# not just amd64); if any is missing on any built arch, nothing is pushed.
 #
 # It then watches the CI builds for the selected branches (at their current commit)
 # to completion — live per-branch status, refreshing, with links to each build —

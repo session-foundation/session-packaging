@@ -116,9 +116,11 @@ Push branches to origin (triggering CI). Globs match the active distro list, e.g
 several space- or comma-separated (`debian/sid forky` or `sid,forky`). No
 argument = all. If any glob matches nothing, nothing is pushed. Before pushing it runs a **dependency
 pre-check**: for each branch it verifies every Session-family build-dependency is
-available at the required version in that branch's target reprepro repo (parsed
-from its `.drone.jsonnet`); if any is missing, nothing is pushed (an unsatisfied
-dep is a guaranteed CI failure — publish the dependency first).
+available at the required version in that branch's target reprepro repo, **for
+every architecture that branch builds** (the `deb_pipeline` debarches in its
+`.drone.jsonnet`, not just amd64); if any is missing on any built arch, nothing is
+pushed (an unsatisfied dep is a guaranteed CI failure — publish the dependency
+first, or drop that arch from the branch's `.drone.jsonnet`).
 
 After pushing it **watches the triggered CI builds** to completion — the same
 live, refreshing per-branch status display `deb-cascade` uses, with links to each

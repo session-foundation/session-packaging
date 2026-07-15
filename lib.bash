@@ -656,10 +656,11 @@ repo_dist_exists() {
     curl -fsI "$base/InRelease" >/dev/null 2>&1 || curl -fsI "$base/Release" >/dev/null 2>&1
 }
 
-# Version of <pkg> published for <suffix>/<distro>/<arch>, or empty. <suffix> is
-# the reprepro repo suffix ('', '/beta', '/staging').
-repo_pkg_version() {
-    local suffix="$1" distro="$2" arch="$3" pkg="$4"
+# Download + decompress the <suffix>/<distro>/<arch> Packages index to a temp file
+# and print its path (caller removes it); prints nothing if the index isn't
+# published. <suffix> is the reprepro repo suffix ('', '/beta', '/staging').
+fetch_packages() {
+    local suffix="$1" distro="$2" arch="$3"
     local base="https://$DEB_REPO_HOST$suffix/dists/$distro/main/binary-$arch"
     local dl tmp ext name got=1
     dl="$(mktemp)"; tmp="$(mktemp)"
@@ -676,16 +677,31 @@ repo_pkg_version() {
     done
     rm -f "$dl"
     if [ "$got" != 0 ]; then rm -f "$tmp"; return 0; fi
-    awk -v p="$pkg" '
+    printf '%s\n' "$tmp"
+}
+
+# Version of <pkg> in a decompressed Packages <file>, or empty.
+pkg_version_in() {
+    awk -v p="$2" '
         $1=="Package:" { cur=$2 }
         $1=="Version:" && cur==p { print $2; exit }
-    ' "$tmp"
-    rm -f "$tmp"
+    ' "$1"
+}
+
+# Version of <pkg> published for <suffix>/<distro>/<arch>, or empty.
+repo_pkg_version() {
+    local f; f="$(fetch_packages "$1" "$2" "$3")"
+    [ -n "$f" ] || return 0
+    pkg_version_in "$f" "$4"
+    rm -f "$f"
 }
 
 # Check that every "ours" build-dep of <branch> is available at the required
-# version in the branch's own target repo (parsed from its .drone.jsonnet).
-# Prints problems to stderr; returns non-zero if any dep is unsatisfied.
+# version in the branch's own target repo (parsed from its .drone.jsonnet), for
+# EVERY architecture that branch's CI builds — not just amd64. A dep that exists
+# for amd64 but is missing for arm64/armhf/i386 still fails those builds, so the
+# pre-check must cover them. Prints problems to stderr; returns non-zero if any dep
+# is unsatisfied on any built arch.
 dep_check() {
     local b="$1" ref
     ref="$(branch_ref "$b")"
@@ -696,6 +712,10 @@ dep_check() {
     control="$(git show "$ref:debian/control" 2>/dev/null)" ||
         { warn "[$b] no debian/control; skipping"; return 0; }
 
+    local -a arches
+    mapfile -t arches < <(drone_debarches "$ref")
+    [ "${#arches[@]}" -gt 0 ] || arches=(amd64)
+
     # Pull the (folded) Build-Depends field and flatten it to one line.
     local bd
     bd="$(printf '%s\n' "$control" | awk '
@@ -704,22 +724,33 @@ dep_check() {
         f                 { exit }
     ' | tr '\n' ' ')"
 
-    local rc=0 entry pkg ver avail IFS=,
+    local rc=0 entry pkg ver avail arch
+    local -A pkgidx=() pkgidx_set=()   # per-arch Packages index, fetched once, lazily
+    local -a miss old
+    local IFS=,
     for entry in $bd; do
         pkg="$(printf '%s' "$entry" | sed -e 's/^[ \t]*//' -e 's/[ \t(|].*//')"
         [ -n "$pkg" ] || continue
         is_our_package "$pkg" || continue
         ver="$(printf '%s' "$entry" | sed -n 's/.*(>=[ \t]*\([^)]*\)).*/\1/p' | tr -d ' ')"
         [ -n "$ver" ] || continue    # no minimum version constraint -> nothing to verify
-        avail="$(repo_pkg_version "$suffix" "$distro" amd64 "$pkg")"
-        if [ -z "$avail" ]; then
-            warn "[$b] $pkg (>= $ver) not found on https://$DEB_REPO_HOST$suffix ($distro)"
-            rc=1
-        elif ! dpkg --compare-versions "$avail" ge "$ver"; then
-            warn "[$b] $pkg $avail is older than required (>= $ver) on https://$DEB_REPO_HOST$suffix ($distro)"
-            rc=1
-        fi
+        miss=(); old=()
+        for arch in "${arches[@]}"; do
+            if [ -z "${pkgidx_set[$arch]:-}" ]; then
+                pkgidx[$arch]="$(fetch_packages "$suffix" "$distro" "$arch")"
+                pkgidx_set[$arch]=1
+            fi
+            if [ -z "${pkgidx[$arch]}" ]; then miss+=("$arch"); continue; fi  # no index for arch
+            avail="$(pkg_version_in "${pkgidx[$arch]}" "$pkg")"
+            if [ -z "$avail" ]; then miss+=("$arch")
+            elif ! dpkg --compare-versions "$avail" ge "$ver"; then old+=("$arch=$avail"); fi
+        done
+        [ "${#miss[@]}" -gt 0 ] && {
+            warn "[$b] $pkg (>= $ver) not published for: ${miss[*]} — https://$DEB_REPO_HOST$suffix ($distro)"; rc=1; }
+        [ "${#old[@]}" -gt 0 ] && {
+            warn "[$b] $pkg older than >= $ver for: ${old[*]} — https://$DEB_REPO_HOST$suffix ($distro)"; rc=1; }
     done
+    for arch in "${!pkgidx[@]}"; do [ -n "${pkgidx[$arch]}" ] && rm -f "${pkgidx[$arch]}"; done
     return "$rc"
 }
 
@@ -730,6 +761,19 @@ dep_check() {
 drone_local() {
     git show "$1:.drone.jsonnet" 2>/dev/null |
         sed -n "s/^local $2 = '\([^']*\)'.*/\1/p" | head -1
+}
+
+# The Debian architectures a ref's CI builds, from its .drone.jsonnet
+# deb_pipeline(...) invocations (each `debarch='...'`, defaulting to amd64). The
+# deb_pipeline definition line (`... ) = {`) is skipped. One arch per line, deduped.
+drone_debarches() {
+    git show "$1:.drone.jsonnet" 2>/dev/null | awk '
+        /deb_pipeline\(/ && $0 !~ /deb_pipeline\([^)]*\)[ \t]*=/ {
+            if (match($0, /debarch=.[a-z0-9]+/)) {
+                a = substr($0, RSTART, RLENGTH); sub(/debarch=./, "", a); print a
+            } else print "amd64"
+        }
+    ' | awk 'NF && !seen[$0]++'
 }
 
 # Binary package names produced by a ref (from its debian/control).
