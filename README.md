@@ -102,6 +102,9 @@ commit your change on `debian/sid` yourself, then run this: it bumps sid's
 changelog and cherry-picks the packaging commit(s) onto every other branch. With
 no commit refs it auto-detects the packaging commits on sid since the last
 changelog entry (and asks for confirmation if there's more than one).
+HEAD-relative refs (`HEAD`, `HEAD~2`, `@^`, …) always resolve against
+`debian/sid`, whatever branch the checkout has checked out — so
+`./deb-pkg-update <repo> HEAD --no-bump` propagates sid's tip commit.
 
 `--no-bump` cherry-picks the given commit(s) onto every active branch that lacks
 them with **no version bump and no changelog entry** — for when a version bump is

@@ -11,7 +11,9 @@
 #               they must live on debian/sid; if omitted they are auto-detected
 #               (sid commits since the last changelog entry that touch something
 #               other than debian/changelog|control), and you confirm if >1.
-#   -m MSG      changelog/commit message (required unless --no-bump)
+#               HEAD-relative refs (HEAD, HEAD~2, @^, …) always resolve against
+#               debian/sid, regardless of which branch is checked out.
+#   -m MSG     changelog/commit message (required unless --no-bump)
 #   --no-bump   cherry-pick the given commit(s) onto every active branch that
 #               lacks them, with NO version bump and NO changelog entry (use when
 #               a version bump is coming separately). Explicit commit ref(s) are
@@ -41,6 +43,24 @@ detect_pkg_commits() {
             printf '%s\n' "$c"
         fi
     done < <(git rev-list --reverse "$last..HEAD")
+}
+
+# Resolve commit_args into COMMITS (full hashes). HEAD-relative refs (HEAD, HEAD~2,
+# @^, …) are taken relative to debian/sid rather than whatever the checkout happens
+# to have checked out, since sid is where packaging commits are normally made.
+resolve_commits() {
+    local c r h sid
+    sid="$(branch_ref debian/sid)"
+    COMMITS=()
+    for c in "${commit_args[@]}"; do
+        case "$c" in
+            HEAD|HEAD[~^]*) r="$sid${c#HEAD}" ;;
+            @|@[~^]*) r="$sid${c#@}" ;;
+            *) r="$c" ;;
+        esac
+        h="$(git rev-parse --verify -q "$r^{commit}")" || die "unknown commit: $c"
+        COMMITS+=("$h")
+    done
 }
 
 [ $# -ge 1 ] || usage
@@ -73,11 +93,7 @@ if [ "$RESUMING" = 0 ]; then
     if [ "$NOBUMP" = 1 ]; then
         [ -z "$COMMIT_MSG" ] || die "--no-bump writes no changelog entry, so it doesn't take -m"
         [ "${#commit_args[@]}" -gt 0 ] || die "--no-bump needs explicit commit ref(s) to cherry-pick"
-        COMMITS=()
-        for c in "${commit_args[@]}"; do
-            h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
-            COMMITS+=("$h")
-        done
+        resolve_commits
         # Operate on the active branches that exist; skip ones not yet created
         # (e.g. a distro that deb-version-bump will add later).
         order=()
@@ -92,12 +108,8 @@ if [ "$RESUMING" = 0 ]; then
         [ -n "$COMMIT_MSG" ] || die "a changelog message (-m) is required"
         require_branches
         checkout_uptodate debian/sid
-        COMMITS=()
         if [ "${#commit_args[@]}" -gt 0 ]; then
-            for c in "${commit_args[@]}"; do
-                h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
-                COMMITS+=("$h")
-            done
+            resolve_commits
         else
             mapfile -t COMMITS < <(detect_pkg_commits)
             [ "${#COMMITS[@]}" -ge 1 ] || die \
