@@ -389,14 +389,17 @@ changelog_version() {
 # Upstream portion of a debian version (strip the debian revision + suffix).
 upstream_of() { printf '%s\n' "${1%-*}"; }
 
+# Numeric debian revision of a version, ignoring any ~suffix/+M.
+# 1.3.0-3~deb13+1 -> 3
+revision_num() {
+    [[ "${1##*-}" =~ ^([0-9]+) ]] || die "cannot parse debian revision from '$1'"
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
 # Increment the debian revision of a version, dropping any ~suffix.
 # 1.3.0-1 -> 1.3.0-2 ;  1.3.0-3~deb13 -> 1.3.0-4
 bump_revision() {
-    local v="$1" up rev
-    up="${v%-*}"
-    rev="${v##*-}"
-    [[ "$rev" =~ ^([0-9]+) ]] || die "cannot parse debian revision from '$v'"
-    printf '%s-%s\n' "$up" "$(( BASH_REMATCH[1] + 1 ))"
+    printf '%s-%s\n' "$(upstream_of "$1")" "$(( $(revision_num "$1") + 1 ))"
 }
 
 # Add or increment a +M counter at the end of a version. Used by --only patches:

@@ -61,14 +61,20 @@ etc. (the known codenames are the `version_suffix` keys in `build-distros.bash`;
 they're unique across debian/ubuntu). So `--only sid,trixie,forky` and
 `./deb-push oxen-mq sid,noble` both work.
 
-### `./deb-version-bump <repo> [--force] [--create-missing] [<source-ref>]`
+### `./deb-version-bump <repo> [--force] [--create-missing] [--version <ver>] [<source-ref>]`
 New upstream release across **all** active distro branches. Reads the new version
-from `<source-ref>`'s top-level `CMakeLists.txt` (`project(... VERSION x.y.z)`);
-the package version becomes `<version>-1<suffix>`. `<source-ref>` defaults to
-`origin/stable`. For each branch: merge upstream → rebase & re-export the patch
-queue → changelog → regenerate `control` → commit. Aborts (touching nothing)
-unless the new upstream version is greater than every branch's current version
-(`--force` overrides).
+from `<source-ref>`'s top-level `CMakeLists.txt` (`project(... VERSION x.y.z)`),
+or takes it from `--version`; the package version becomes `<version>-1<suffix>`.
+`<source-ref>` defaults to `origin/stable`. For each branch: merge upstream →
+rebase & re-export the patch queue → changelog → regenerate `control` → commit.
+Aborts (touching nothing) unless the new upstream version is greater than every
+branch's current version.
+
+To re-release an upstream version the branches already carry (e.g. upstream
+re-tagged 1.3.2 and the packages are at `1.3.2-3`), either pass `--force`, which
+continues at the next `-N` (`1.3.2-4`), or give the revision explicitly with
+`--version 1.3.2-4`. Either way the new version must still outrank every branch's
+current one, because `dch` refuses anything else.
 
 If an active distro branch doesn't exist yet, it's created **as part of this
 release** rather than being a hard error. The existing branches are bumped first;
