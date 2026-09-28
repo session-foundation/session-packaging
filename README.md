@@ -138,6 +138,15 @@ was pushed, so if you interrupt the watch, re-running the same `deb-push` resume
 it. Pass `--no-wait` to skip the watch (it's also skipped automatically if
 `woodpecker-cli` isn't installed or can't authenticate).
 
+### `./deb-ci-restart <repo> [<branch-glob>...]`
+Restart failed CI builds without pushing anything, e.g. after fixing a CI-side
+problem such as a broken upload step. Branch selection works like `deb-push`
+(default: all). For each branch it looks at the latest pipeline for the commit on
+origin: if that has already finished without success it's restarted; builds that
+passed or are still running are left alone. It then watches all of them like
+`deb-push` does. A build that fails while being watched isn't restarted again, so
+re-run to retry it.
+
 ### `./deb-add-distro <repo> <debian|ubuntu>/<codename>`
 Create packaging for a new distro release. New `debian/*` branches fork from
 `debian/sid`; new `ubuntu/*` branches fork from the newest existing `ubuntu/*`

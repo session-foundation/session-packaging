@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# deb-ci-restart — restart failed CI builds of distro branches, then watch them.
+#
+# Usage: ./deb-ci-restart <repo> [<branch-glob>...]
+#
+#   <repo>          managed checkout directory (e.g. oxen-mq)
+#   <branch-glob>   which branches, as for deb-push: globs over the active distro
+#                   list, or bare codenames, space- or comma-separated.
+#                   Default: 'debian/*' 'ubuntu/*'.
+#
+# For each selected branch, finds the latest CI pipeline for the commit currently
+# on origin. If that pipeline has already finished without success (failure,
+# error, killed, …), it's restarted. Pipelines that passed or are still going are
+# left alone. It then watches all the selected branches' builds to completion (the
+# same display as deb-push) and exits non-zero if any fail. A build that fails
+# while being watched is reported, not restarted again; re-run to retry it.
+#
+# Interrupting the watch doesn't cancel the restarts; re-run deb-push (or this)
+# to resume watching.
+
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+
+[ $# -ge 1 ] || usage
+case "$1" in -h|--help) usage 0 ;; esac
+repo="$1"; shift
+resolve_repo "$repo"
+require_ci
+
+select_branches "$@"
+
+msg "Fetching origin..."
+git fetch -q origin
+
+slug="$(origin_slug)"
+[ -n "$slug" ] || die "couldn't determine the origin slug"
+
+MON_ITEMS=()
+for b in "${SELECTED[@]}"; do
+    sha="$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)"
+    if [ -z "$sha" ]; then
+        msg ">> $(cpkg "$b") $C_DIM not on origin — skipping$C_RESET"
+        continue
+    fi
+    MON_ITEMS+=("$b|$slug|$b|$sha|1")
+done
+[ "${#MON_ITEMS[@]}" -gt 0 ] || { msg "No selected branches are on origin — nothing to restart."; exit 0; }
+
+msg "${C_DIM}(Ctrl-C to stop watching; restarted builds keep running)${C_RESET}"
+monitor_ci
+[ "${#MON_FAILED[@]}" -eq 0 ] || die "CI failed for: $(cpkg "${MON_FAILED[*]}")"
+msg "${C_OK}All CI builds passed.${C_RESET}"

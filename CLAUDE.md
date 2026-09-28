@@ -22,7 +22,10 @@ contains that packaging; it orchestrates it.
 * `lib.bash` — all shared functions. Tools are thin front-ends that source it.
   Keep logic here (DRY); don't duplicate across tools.
 * `deb-version-bump`, `deb-add-patch`, `deb-pkg-update`, `deb-rebuild`, `deb-push`,
-  `deb-add-distro` — the single-repo tools. See README for each. `deb-rebuild` is a
+  `deb-ci-restart`, `deb-add-distro` — the single-repo tools. See README for each.
+  `deb-ci-restart` restarts already-failed CI pipelines (no push) and watches
+  them; don't confuse it with `deb-rebuild`, which is a
+  packaging bump. `deb-rebuild` is a
   no-change rebuild bump (binNMU-style, e.g. relinking a new system-lib soname):
   no source change, just a version bump + changelog entry. `deb-add-patch` and
   `deb-rebuild` take `--only <glob>` (per-distro, uses `+M` not `-N`).

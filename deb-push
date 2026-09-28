@@ -40,24 +40,8 @@ for a in "$@"; do
     case "$a" in --no-wait) NOWAIT=1 ;; *) args+=("$a") ;; esac
 done
 
-# Accept space- and comma-separated globs, and bare codenames (sid, trixie, …),
-# which expand_distro_spec turns into full branches.
-mapfile -t globs < <(expand_distro_spec ${args[@]+"${args[@]}"})
-[ "${#globs[@]}" -gt 0 ] || globs=('debian/*' 'ubuntu/*')
-
-# Expand globs against the active distro list; fail fast on a non-matching glob.
-selected=()
-for g in "${globs[@]}"; do
-    hits=()
-    for b in "${distros[@]}"; do
-        # shellcheck disable=SC2254
-        case "$b" in $g) hits+=("$b") ;; esac
-    done
-    [ "${#hits[@]}" -gt 0 ] || die "no active branch matches '$g' — nothing pushed"
-    selected+=("${hits[@]}")
-done
-# De-duplicate, preserving order.
-mapfile -t selected < <(printf '%s\n' "${selected[@]}" | awk '!seen[$0]++')
+select_branches ${args[@]+"${args[@]}"}
+selected=("${SELECTED[@]}")
 
 msg "Fetching origin..."
 git fetch -q origin

@@ -445,6 +445,28 @@ expand_distro_spec() {
     done
 }
 
+# Resolve branch-selection args (globs and bare codenames, space- or
+# comma-separated; none = 'debian/*' 'ubuntu/*') against the active distro list
+# into SELECTED, de-duplicated in order. Dies if any glob matches no active branch.
+SELECTED=()
+select_branches() {
+    local g b
+    local -a globs hits
+    mapfile -t globs < <(expand_distro_spec "$@")
+    [ "${#globs[@]}" -gt 0 ] || globs=('debian/*' 'ubuntu/*')
+    SELECTED=()
+    for g in "${globs[@]}"; do
+        hits=()
+        for b in "${distros[@]}"; do
+            # shellcheck disable=SC2254
+            case "$b" in $g) hits+=("$b") ;; esac
+        done
+        [ "${#hits[@]}" -gt 0 ] || die "no active branch matches '$g'"
+        SELECTED+=("${hits[@]}")
+    done
+    mapfile -t SELECTED < <(printf '%s\n' "${SELECTED[@]}" | awk '!seen[$0]++')
+}
+
 # Changelog distribution field for a branch: the codename, except sid -> unstable.
 changelog_dist() {
     if [ "$1" = debian/sid ]; then printf 'unstable\n'; else printf '%s\n' "${1#*/}"; fi
@@ -890,8 +912,8 @@ ci_terminal() {
 # (one item per repo) and deb-push (one item per pushed branch).
 #
 # Input:  MON_ITEMS — each entry "label|slug|branch|sha|noop"; noop=1 lets a stale
-#                     *already-terminal* build be auto-restarted once (cascade
-#                     reentrancy), 0 = never restart.
+#                     build that is *already* failed when first seen be restarted
+#                     once (cascade reentrancy, deb-ci-restart), 0 = never restart.
 #         MON_POLL  — seconds between polls (default 4).
 # Output: MON_FAILED — labels whose build didn't finish "success" (empty = all ok).
 # Requires have_ci/require_ci to have succeeded (for CI_SERVER).
@@ -909,7 +931,7 @@ monitor_ci() {
     local wid=1
     for ((i = 0; i < n; i++)); do [ "${#lbl[i]}" -gt "$wid" ] && wid="${#lbl[i]}"; done
 
-    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=() rid=() ridof=()
+    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=() rid=() ridof=() seen=()
     for ((i = 0; i < n; i++)); do
         [ -n "${ridof[${slug[i]}]:-}" ] || ridof[${slug[i]}]="$(ci_repo_id "${slug[i]}")"
         rid[$i]="${ridof[${slug[i]}]}"
@@ -948,13 +970,16 @@ monitor_ci() {
             fi
             detail="$(ci_build_detail "${rid[$i]}" "${bnum[$i]}")"
             ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"; [ -n "$ov" ] || ov=pending
-            if [ "${restarted[$i]:-0}" = 0 ] && [ "${noop[i]:-0}" = 1 ] \
+            # Only on first sight: a build that fails while being watched is a real
+            # failure to report, not a stale one to retry.
+            if [ -z "${seen[$i]:-}" ] && [ "${restarted[$i]:-0}" = 0 ] && [ "${noop[i]:-0}" = 1 ] \
                && ci_terminal "$ov" && [ "$ov" != success ]; then
                 if ci_restart "${rid[$i]}" "${bnum[$i]}"; then
                     restarted[$i]=1; oldfail[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
                     lines+=("$(printf '  %s %srestarting #%s…%s' "$lf" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
                 fi
             fi
+            if [ -n "$detail" ]; then seen[$i]=1; fi
             cst[$i]="$ov"; ci_terminal "$ov" || all_done=0
             tags=""
             while IFS= read -r sline; do
