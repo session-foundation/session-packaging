@@ -120,13 +120,14 @@ render_block_end() { _block_lines=0; _last_status=""; return 0; }
 # Extract the short arch label from a stage name like "Ubuntu resolute (amd64)".
 stage_arch() { case "$1" in *\(*\)) local a="${1##*(}"; printf '%s' "${a%)}" ;; *) printf '%s' "$1" ;; esac; }
 
-# Coloured "<repo>(<state>)" tag for a drone build status, for the CI line.
+# Coloured "<repo>(<state>)" tag for a CI pipeline/workflow status, for the CI line.
 ci_tag() {
     local r="$1" s="$2" c label
     case "$s" in
         success)                       c="$C_OK";   label=done ;;
         running)                       c="$C_WARN"; label=building ;;
-        pending|"")                    c="$C_DIM";  label=queued ;;
+        pending|created|"")            c="$C_DIM";  label=queued ;;
+        blocked)                       c="$C_WARN"; label=needs-approval ;;
         none)                          c="$C_DIM";  label=no-build ;;
         failure|error|killed|declined) c="$C_ERR";  label="$s" ;;
         *)                             c="$C_DIM";  label="$s" ;;
@@ -825,53 +826,62 @@ published_in_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# drone CI (used by deb-cascade)
+# Woodpecker CI (via woodpecker-cli, using its configured context or
+# WOODPECKER_SERVER/WOODPECKER_TOKEN)
 # ---------------------------------------------------------------------------
-require_drone() {
-    command -v drone >/dev/null 2>&1 ||
-        die "the 'drone' CLI is required for CI monitoring but was not found"
-    [ -n "${DRONE_SERVER:-}" ] && [ -n "${DRONE_TOKEN:-}" ] ||
-        die "DRONE_SERVER and DRONE_TOKEN must be set for CI monitoring"
-    export DRONE_SERVER DRONE_TOKEN
+CI_SERVER=""
+
+# 0 if woodpecker-cli is installed and can authenticate, setting CI_SERVER (the
+# web UI base, for build links); else 1 (caller decides whether that's fatal).
+have_ci() {
+    command -v woodpecker-cli >/dev/null 2>&1 || return 1
+    woodpecker-cli info >/dev/null 2>&1 || return 1
+    CI_SERVER="${WOODPECKER_SERVER:-$(woodpecker-cli context ls 2>/dev/null | awk '$2=="*" {print $3; exit}')}"
+    CI_SERVER="${CI_SERVER%/}"
 }
 
-# Newest build number for <slug> targeting <branch> at commit <sha>, or empty.
-# No event filter, so a `drone build restart` (newer, same commit, possibly a
+require_ci() {
+    command -v woodpecker-cli >/dev/null 2>&1 ||
+        die "the 'woodpecker-cli' CLI is required for CI monitoring but was not found"
+    have_ci || die "woodpecker-cli can't authenticate; run 'woodpecker-cli setup' (or set WOODPECKER_SERVER/WOODPECKER_TOKEN)"
+}
+
+# Woodpecker's numeric repo id for an "owner/repo" slug, or empty if the repo
+# isn't activated there. Build links need the id, not the slug.
+ci_repo_id() {
+    woodpecker-cli repo show "$1" --output 'go-template={{range .}}{{.ID}}{{end}}' 2>/dev/null || true
+}
+
+# Newest pipeline number for <repo> targeting <branch> at commit <sha>, or empty.
+# No event filter, so a restarted pipeline (newer, same commit, possibly a
 # different event) is found too. `--branch` filters the target branch, which
 # already excludes PRs *from* this branch (those target their base branch).
-drone_build_for() {
-    drone build ls "$1" --branch "$2" --limit 30 \
-        --format $'{{.Number}}\t{{.After}}\n' 2>/dev/null |
+ci_build_for() {
+    woodpecker-cli pipeline ls "$1" --branch "$2" --limit 30 \
+        --output $'go-template={{range .}}{{.Number}}\t{{.Commit}}\n{{end}}' 2>/dev/null |
         awk -v s="$3" '$2==s && !seen {print $1; seen=1}'
 }
 
-# Restart a build and return the resulting build number (may differ), or empty.
-drone_restart() {
-    drone build restart "$1" "$2" >/dev/null 2>&1 || return 1
+# Restart a pipeline. Woodpecker creates a new pipeline number for it, which
+# ci_build_for then finds as the newest at that commit.
+ci_restart() {
+    woodpecker-cli pipeline start "$1" "$2" >/dev/null 2>&1 || return 1
 }
 
-drone_status() { drone build info "$1" "$2" --format $'{{.Status}}\n' 2>/dev/null; }
-
-# One call returning a build's overall status and each stage, as a `STATUS=<s>`
-# line followed by `STAGE=<name>=<s>` lines. Guarded so it is never fatal.
-drone_build_detail() {
-    drone build info "$1" "$2" \
-        --format 'STATUS={{.Status}}{{"\n"}}{{range .Stages}}STAGE={{.Name}}={{.Status}}{{"\n"}}{{end}}' \
+# One call returning a pipeline's overall status and each workflow, as a
+# `STATUS=<s>` line followed by `STAGE=<name>=<s>` lines. Guarded so it is never
+# fatal. The "DEPRECATED" workflow is the server's Drone-config notice, not a build.
+ci_build_detail() {
+    woodpecker-cli pipeline show "$1" "$2" \
+        --output 'go-template={{range .}}STATUS={{.Status}}{{"\n"}}{{range .Workflows}}{{if ne .Name "DEPRECATED"}}STAGE={{.Name}}={{.State}}{{"\n"}}{{end}}{{end}}{{end}}' \
         2>/dev/null || true
 }
 
-drone_terminal() {
+ci_terminal() {
     case "$1" in
         success|failure|error|killed|skipped|declined) return 0 ;;
         *) return 1 ;;
     esac
-}
-
-# Non-fatal counterpart to require_drone: 0 if the drone CLI + creds are present
-# (exported), else 1 (caller decides whether that's fatal).
-have_drone() {
-    command -v drone >/dev/null 2>&1 && [ -n "${DRONE_SERVER:-}" ] && [ -n "${DRONE_TOKEN:-}" ] || return 1
-    export DRONE_SERVER DRONE_TOKEN
 }
 
 # Live-watch a set of CI builds to completion, rendering a refreshing block (one
@@ -884,7 +894,8 @@ have_drone() {
 #                     reentrancy), 0 = never restart.
 #         MON_POLL  — seconds between polls (default 4).
 # Output: MON_FAILED — labels whose build didn't finish "success" (empty = all ok).
-# Every drone call is guarded so a transient CLI hiccup can't abort under `set -e`.
+# Requires have_ci/require_ci to have succeeded (for CI_SERVER).
+# Every CI call is guarded so a transient CLI hiccup can't abort under `set -e`.
 MON_ITEMS=(); MON_FAILED=()
 monitor_ci() {
     local poll="${MON_POLL:-4}" n=0 i rec
@@ -898,7 +909,15 @@ monitor_ci() {
     local wid=1
     for ((i = 0; i < n; i++)); do [ "${#lbl[i]}" -gt "$wid" ] && wid="${#lbl[i]}"; done
 
-    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=()
+    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=() rid=() ridof=()
+    for ((i = 0; i < n; i++)); do
+        [ -n "${ridof[${slug[i]}]:-}" ] || ridof[${slug[i]}]="$(ci_repo_id "${slug[i]}")"
+        rid[$i]="${ridof[${slug[i]}]}"
+        if [ -z "${rid[$i]}" ]; then
+            warn "${slug[i]} isn't an active repo on $CI_SERVER"
+            gaveup[$i]=1; cst[$i]=nobuild
+        fi
+    done
     local all_done detail ov tags sline bpad blink cand lf
     local -a lines
     msg "Watching CI (every ${poll}s)..."
@@ -912,7 +931,7 @@ monitor_ci() {
                 lines+=("$(printf '  %s %sno build found%s' "$lf" "$C_ERR" "$C_RESET")"); continue
             fi
             if [ -z "${bnum[$i]:-}" ]; then
-                cand="$(drone_build_for "${slug[i]}" "${br[i]}" "${sha[i]}" 2>/dev/null || true)"
+                cand="$(ci_build_for "${rid[$i]}" "${br[i]}" "${sha[i]}" 2>/dev/null || true)"
                 if [ -n "$cand" ] && [ "$cand" != "${oldfail[$i]:-}" ]; then
                     bnum[$i]="$cand"; tries[$i]=0
                 else
@@ -927,16 +946,16 @@ monitor_ci() {
                     continue
                 fi
             fi
-            detail="$(drone_build_detail "${slug[i]}" "${bnum[$i]}")"
+            detail="$(ci_build_detail "${rid[$i]}" "${bnum[$i]}")"
             ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"; [ -n "$ov" ] || ov=pending
             if [ "${restarted[$i]:-0}" = 0 ] && [ "${noop[i]:-0}" = 1 ] \
-               && drone_terminal "$ov" && [ "$ov" != success ]; then
-                if drone_restart "${slug[i]}" "${bnum[$i]}"; then
+               && ci_terminal "$ov" && [ "$ov" != success ]; then
+                if ci_restart "${rid[$i]}" "${bnum[$i]}"; then
                     restarted[$i]=1; oldfail[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
                     lines+=("$(printf '  %s %srestarting #%s…%s' "$lf" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
                 fi
             fi
-            cst[$i]="$ov"; drone_terminal "$ov" || all_done=0
+            cst[$i]="$ov"; ci_terminal "$ov" || all_done=0
             tags=""
             while IFS= read -r sline; do
                 [ -n "$sline" ] || continue
@@ -944,7 +963,7 @@ monitor_ci() {
             done < <(printf '%s\n' "$detail" | sed -n 's/^STAGE=//p')
             [ -n "$tags" ] || tags=" $(ci_tag build "$ov")"
             bpad=$(( 5 - ${#bnum[$i]} )); [ "$bpad" -lt 1 ] && bpad=1
-            blink="$(hyperlink "$DRONE_SERVER/${slug[i]}/${bnum[$i]}" "#${bnum[$i]}")"
+            blink="$(hyperlink "$CI_SERVER/repos/${rid[$i]}/pipeline/${bnum[$i]}" "#${bnum[$i]}")"
             lines+=("$(printf '  %s %s%*s%s' "$lf" "$blink" "$bpad" "" "$tags")")
         done
         render_block "${lines[@]}"

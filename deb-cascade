@@ -20,7 +20,7 @@
 #   4. pause for you to upload the built packages to /staging (manual signing
 #      step), auto-rechecking until they appear, then continue to the next line.
 #
-# Requires the 'drone' CLI with DRONE_SERVER/DRONE_TOKEN set.
+# Requires woodpecker-cli, set up (woodpecker-cli setup) for the CI server.
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
 done
 case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
 
-require_drone
+require_ci
 
 # The staging distribution must already exist (reprepro won't be populated for a
 # brand-new distro until it's exported once, even empty) — otherwise CI builds
@@ -108,13 +108,15 @@ for line in "${steps[@]}"; do
     # 2) push (deb-push's dep pre-check enforces that earlier steps are staged).
     # Record whether each push was a no-op (branch already on the remote at this
     # commit): that distinguishes a stale failed build from a fresh failure.
+    # --no-wait: step 3 watches the whole line in parallel, and deb-push's own
+    # watch would die on a stale failure before step 3 could restart it.
     declare -A sha=() noop=()
     for r in "${todo[@]}"; do
         sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
         rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
         [ "$rem" = "${sha[$r]}" ] && noop[$r]=1 || noop[$r]=0
         msg "[$(cpkg "$r")] pushing $branch ..."
-        "$SP_ROOT/deb-push" "$r" "$branch"
+        "$SP_ROOT/deb-push" "$r" --no-wait "$branch"
     done
 
     # 3) watch every build to completion (shared monitor_ci: dim while locating,

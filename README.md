@@ -133,9 +133,10 @@ first, or drop that arch from the branch's `.drone.jsonnet`).
 
 After pushing it **watches the triggered CI builds** to completion — the same
 live, refreshing per-branch status display `deb-cascade` uses, with links to each
-build — and exits non-zero if any build fails. Pass `--no-wait` to skip the watch
-(or if the `drone` CLI / `DRONE_SERVER`+`DRONE_TOKEN` aren't available it's skipped
-automatically).
+build — and exits non-zero if any build fails. It watches whether or not anything
+was pushed, so if you interrupt the watch, re-running the same `deb-push` resumes
+it. Pass `--no-wait` to skip the watch (it's also skipped automatically if
+`woodpecker-cli` isn't installed or can't authenticate).
 
 ### `./deb-add-distro <repo> <debian|ubuntu>/<codename>`
 Create packaging for a new distro release. New `debian/*` branches fork from
@@ -166,8 +167,9 @@ at a time. For each line it: skips repos already in `/staging` at that version
 (so it's safe to re-run after a failure), pushes the rest, **watches each CI
 build to completion** (alerting on success, stopping on failure), then pauses for
 you to upload the built packages to `/staging` (the manual signing step),
-auto-rechecking until they appear before moving to the next line. Requires the
-`drone` CLI with `DRONE_SERVER`/`DRONE_TOKEN` set.
+auto-rechecking until they appear before moving to the next line. Requires
+`woodpecker-cli`, set up for the CI server (`woodpecker-cli setup`, or
+`WOODPECKER_SERVER`/`WOODPECKER_TOKEN`).
 
 So, to add resolute everywhere:
 ```sh

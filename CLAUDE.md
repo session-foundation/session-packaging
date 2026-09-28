@@ -28,7 +28,8 @@ contains that packaging; it orchestrates it.
   `deb-rebuild` take `--only <glob>` (per-distro, uses `+M` not `-N`).
 * `deb-add-distro-all` + `deb-cascade` — cross-repo tools driven by `build-order`
   (dependency-ordered build steps). `deb-cascade` pushes a branch across all
-  repos in order, monitors CI (via the `drone` CLI), and pauses for the manual
+  repos in order, monitors CI (Woodpecker at `ci.session.codes`, via
+  `woodpecker-cli`), and pauses for the manual
   `/staging` publish between steps; it's reentrant (skips repos already in
   `/staging`).
 * `build-order` — hand-maintained cross-repo dependency ordering (one line per
@@ -67,6 +68,10 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
 
 ## Gotchas
 
+* **CI is Woodpecker, but the config is still `.drone.jsonnet`**, which the
+  server still accepts (it adds a "DEPRECATED" notice workflow to each
+  pipeline, which `ci_build_detail` hides). Build links need Woodpecker's
+  numeric repo id (`ci_repo_id`), not the slug.
 * **`.drone.jsonnet` conflicts are expected** on every upstream merge (the
   packaging branch fully replaces it). They're auto-resolved `--ours`; only
   *other* conflicts stop the run.
