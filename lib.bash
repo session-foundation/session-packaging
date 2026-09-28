@@ -890,6 +890,14 @@ ci_restart() {
     woodpecker-cli pipeline start "$1" "$2" >/dev/null 2>&1 || return 1
 }
 
+ci_stop() {
+    woodpecker-cli pipeline stop "$1" "$2" >/dev/null 2>&1 || return 1
+}
+
+ci_status() {
+    woodpecker-cli pipeline show "$1" "$2" --output 'go-template={{range .}}{{.Status}}{{end}}' 2>/dev/null || true
+}
+
 # One call returning a pipeline's overall status and each workflow, as a
 # `STATUS=<s>` line followed by `STAGE=<name>=<s>` lines. Guarded so it is never
 # fatal. The "DEPRECATED" workflow is the server's Drone-config notice, not a build.
@@ -911,9 +919,11 @@ ci_terminal() {
 # terminal tag when done, with an OSC-8 link to the build). Shared by deb-cascade
 # (one item per repo) and deb-push (one item per pushed branch).
 #
-# Input:  MON_ITEMS — each entry "label|slug|branch|sha|noop"; noop=1 lets a stale
-#                     build that is *already* failed when first seen be restarted
-#                     once (cascade reentrancy, deb-ci-restart), 0 = never restart.
+# Input:  MON_ITEMS — each entry "label|slug|branch|sha|noop[|old]"; noop=1 lets a
+#                     stale build that is *already* failed when first seen be
+#                     restarted once (cascade reentrancy), 0 = never restart.
+#                     Optional <old> is a build number to ignore (one the caller
+#                     just restarted), so the watch waits for its replacement.
 #         MON_POLL  — seconds between polls (default 4).
 # Output: MON_FAILED — labels whose build didn't finish "success" (empty = all ok).
 # Requires have_ci/require_ci to have succeeded (for CI_SERVER).
@@ -921,9 +931,9 @@ ci_terminal() {
 MON_ITEMS=(); MON_FAILED=()
 monitor_ci() {
     local poll="${MON_POLL:-4}" n=0 i rec
-    local -a lbl slug br sha noop
+    local -a lbl slug br sha noop old
     for rec in "${MON_ITEMS[@]}"; do
-        IFS='|' read -r "lbl[$n]" "slug[$n]" "br[$n]" "sha[$n]" "noop[$n]" <<< "$rec"
+        IFS='|' read -r "lbl[$n]" "slug[$n]" "br[$n]" "sha[$n]" "noop[$n]" "old[$n]" <<< "$rec"
         n=$((n + 1))
     done
     MON_FAILED=()
@@ -935,6 +945,7 @@ monitor_ci() {
     for ((i = 0; i < n; i++)); do
         [ -n "${ridof[${slug[i]}]:-}" ] || ridof[${slug[i]}]="$(ci_repo_id "${slug[i]}")"
         rid[$i]="${ridof[${slug[i]}]}"
+        [ -z "${old[i]:-}" ] || oldfail[$i]="${old[i]}"
         if [ -z "${rid[$i]}" ]; then
             warn "${slug[i]} isn't an active repo on $CI_SERVER"
             gaveup[$i]=1; cst[$i]=nobuild

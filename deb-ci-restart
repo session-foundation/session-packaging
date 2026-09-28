@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deb-ci-restart — restart failed CI builds of distro branches, then watch them.
+# deb-ci-restart — restart the CI builds of distro branches, then watch them.
 #
 # Usage: ./deb-ci-restart <repo> [<branch-glob>...]
 #
@@ -10,14 +10,12 @@
 #                   Default: 'debian/*' 'ubuntu/*'.
 #
 # For each selected branch, finds the latest CI pipeline for the commit currently
-# on origin. If that pipeline has already finished without success (failure,
-# error, killed, …), it's restarted. Pipelines that passed or are still going are
-# left alone. It then watches all the selected branches' builds to completion (the
-# same display as deb-push) and exits non-zero if any fail. A build that fails
-# while being watched is reported, not restarted again; re-run to retry it.
+# on origin and restarts it, whatever its state; one that's still running or
+# queued is stopped first. It then watches the new builds to completion (the same
+# display as deb-push) and exits non-zero if any fail.
 #
-# Interrupting the watch doesn't cancel the restarts; re-run deb-push (or this)
-# to resume watching.
+# Interrupting the watch doesn't cancel the restarts. To resume watching, re-run
+# deb-push, not this, which would restart them all again.
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
@@ -36,18 +34,37 @@ git fetch -q origin
 slug="$(origin_slug)"
 [ -n "$slug" ] || die "couldn't determine the origin slug"
 
+rid="$(ci_repo_id "$slug")"
+[ -n "$rid" ] || die "$slug isn't an active repo on $CI_SERVER"
+
 MON_ITEMS=()
+fail=0
 for b in "${SELECTED[@]}"; do
     sha="$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)"
     if [ -z "$sha" ]; then
         msg ">> $(cpkg "$b") $C_DIM not on origin — skipping$C_RESET"
         continue
     fi
-    MON_ITEMS+=("$b|$slug|$b|$sha|1")
+    num="$(ci_build_for "$rid" "$b" "$sha")"
+    if [ -z "$num" ]; then
+        warn "$b: no pipeline found for ${sha:0:10} — skipping"
+        fail=1; continue
+    fi
+    st="$(ci_status "$rid" "$num")"
+    # A still-running pipeline would otherwise keep going alongside the restart,
+    # with both uploading the same packages.
+    if ! ci_terminal "$st"; then
+        msg ">> $(cpkg "$b") stopping $st #$num"
+        ci_stop "$rid" "$num" || { warn "$b: failed to stop #$num — not restarting it"; fail=1; continue; }
+    fi
+    msg ">> $(cpkg "$b") restarting #$num"
+    ci_restart "$rid" "$num" || { warn "$b: failed to restart #$num"; fail=1; continue; }
+    MON_ITEMS+=("$b|$slug|$b|$sha|0|$num")
 done
-[ "${#MON_ITEMS[@]}" -gt 0 ] || { msg "No selected branches are on origin — nothing to restart."; exit 0; }
+[ "${#MON_ITEMS[@]}" -gt 0 ] || die "nothing was restarted"
 
-msg "${C_DIM}(Ctrl-C to stop watching; restarted builds keep running)${C_RESET}"
+msg "${C_DIM}(Ctrl-C to stop watching; restarted builds keep running; re-run deb-push to resume watching)${C_RESET}"
 monitor_ci
 [ "${#MON_FAILED[@]}" -eq 0 ] || die "CI failed for: $(cpkg "${MON_FAILED[*]}")"
+[ "$fail" = 0 ] || die "some branches couldn't be restarted (see above)"
 msg "${C_OK}All CI builds passed.${C_RESET}"

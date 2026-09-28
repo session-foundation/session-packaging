@@ -23,7 +23,7 @@ contains that packaging; it orchestrates it.
   Keep logic here (DRY); don't duplicate across tools.
 * `deb-version-bump`, `deb-add-patch`, `deb-pkg-update`, `deb-rebuild`, `deb-push`,
   `deb-ci-restart`, `deb-add-distro` — the single-repo tools. See README for each.
-  `deb-ci-restart` restarts already-failed CI pipelines (no push) and watches
+  `deb-ci-restart` stops and restarts branches' CI pipelines (no push) and watches
   them; don't confuse it with `deb-rebuild`, which is a
   packaging bump. `deb-rebuild` is a
   no-change rebuild bump (binNMU-style, e.g. relinking a new system-lib soname):
