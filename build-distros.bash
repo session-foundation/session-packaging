@@ -21,7 +21,7 @@ declare -A version_suffix=(
     [ubuntu/stonking]='~ubuntu2610'
 )
 
-distros=(debian/{sid,forky,trixie,bookworm} ubuntu/{resolute,noble,jammy})
+distros=(debian/{sid,forky,trixie,bookworm} ubuntu/{stonking,resolute,noble,jammy})
 
 # Per-repo opt-outs: distro branches a given repo does NOT build (e.g. it never
 # built there, or we've given up fixing an old distro for it). Keyed by checkout
