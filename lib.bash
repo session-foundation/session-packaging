@@ -750,10 +750,10 @@ dep_check() {
     ref="$(branch_ref "$b")"
     local control distro suffix
     distro="$(drone_local "$ref" distro)"
-    [ -n "$distro" ] || { warn "[$b] no/unparseable .drone.jsonnet; skipping dep check"; return 0; }
+    [ -n "$distro" ] || { warn "[$(cpkg "$b")] no/unparseable .drone.jsonnet; skipping dep check"; return 0; }
     suffix="$(drone_local "$ref" repo_suffix)"
     control="$(git show "$ref:debian/control" 2>/dev/null)" ||
-        { warn "[$b] no debian/control; skipping"; return 0; }
+        { warn "[$(cpkg "$b")] no debian/control; skipping"; return 0; }
 
     local -a arches
     mapfile -t arches < <(drone_debarches "$ref")
@@ -767,17 +767,20 @@ dep_check() {
         f                 { exit }
     ' | tr '\n' ' ')"
 
-    local rc=0 entry pkg ver avail arch
+    local rc=0 entry pkg ver avail arch v list
     local -A pkgidx=() pkgidx_set=()   # per-arch Packages index, fetched once, lazily
-    local -a miss old
-    local IFS=,
-    for entry in $bd; do
+    # Outdated arches are grouped by the version they have, so each distinct stale
+    # version is reported once with its arches; old_vers keeps first-seen order.
+    local -a entries miss old_vers
+    local -A old_arches
+    IFS=, read -ra entries <<< "$bd"
+    for entry in "${entries[@]}"; do
         pkg="$(printf '%s' "$entry" | sed -e 's/^[ \t]*//' -e 's/[ \t(|].*//')"
         [ -n "$pkg" ] || continue
         is_our_package "$pkg" || continue
         ver="$(printf '%s' "$entry" | sed -n 's/.*(>=[ \t]*\([^)]*\)).*/\1/p' | tr -d ' ')"
         [ -n "$ver" ] || continue    # no minimum version constraint -> nothing to verify
-        miss=(); old=()
+        miss=(); old_vers=(); old_arches=()
         for arch in "${arches[@]}"; do
             if [ -z "${pkgidx_set[$arch]:-}" ]; then
                 pkgidx[$arch]="$(fetch_packages "$suffix" "$distro" "$arch")"
@@ -786,12 +789,24 @@ dep_check() {
             if [ -z "${pkgidx[$arch]}" ]; then miss+=("$arch"); continue; fi  # no index for arch
             avail="$(pkg_version_in "${pkgidx[$arch]}" "$pkg")"
             if [ -z "$avail" ]; then miss+=("$arch")
-            elif ! dpkg --compare-versions "$avail" ge "$ver"; then old+=("$arch=$avail"); fi
+            elif ! dpkg --compare-versions "$avail" ge "$ver"; then
+                [ -n "${old_arches[$avail]:-}" ] || old_vers+=("$avail")
+                old_arches[$avail]+="${old_arches[$avail]:+, }$arch"
+            fi
         done
-        [ "${#miss[@]}" -gt 0 ] && {
-            warn "[$b] $pkg (>= $ver) not published for: ${miss[*]} — https://$DEB_REPO_HOST$suffix ($distro)"; rc=1; }
-        [ "${#old[@]}" -gt 0 ] && {
-            warn "[$b] $pkg older than >= $ver for: ${old[*]} — https://$DEB_REPO_HOST$suffix ($distro)"; rc=1; }
+        if [ "${#miss[@]}" -gt 0 ]; then
+            printf -v list '%s, ' "${miss[@]}"
+            warn "[$(cpkg "$b")] $(cpkg "$pkg") (>= $(cver "$ver")) not published for: ${list%, } — https://$DEB_REPO_HOST$suffix ($distro)"
+            rc=1
+        fi
+        if [ "${#old_vers[@]}" -gt 0 ]; then
+            list=""
+            for v in "${old_vers[@]}"; do
+                list+="${list:+, }$C_BOLD$C_WARN$v$C_RESET (${old_arches[$v]})"
+            done
+            warn "[$(cpkg "$b")] $(cpkg "$pkg") (>= $(cver "$ver")) unsatisfied: $list — https://$DEB_REPO_HOST$suffix ($distro)"
+            rc=1
+        fi
     done
     for arch in "${!pkgidx[@]}"; do [ -n "${pkgidx[$arch]}" ] && rm -f "${pkgidx[$arch]}"; done
     return "$rc"
