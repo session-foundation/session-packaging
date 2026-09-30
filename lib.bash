@@ -124,13 +124,13 @@ stage_arch() { case "$1" in *\(*\)) local a="${1##*(}"; printf '%s' "${a%)}" ;; 
 ci_tag() {
     local r="$1" s="$2" c label
     case "$s" in
-        success)                       c="$C_OK";   label=done ;;
-        running)                       c="$C_WARN"; label=building ;;
-        pending|created|"")            c="$C_DIM";  label=queued ;;
-        blocked)                       c="$C_WARN"; label=needs-approval ;;
-        none)                          c="$C_DIM";  label=no-build ;;
-        failure|error|killed|declined) c="$C_ERR";  label="$s" ;;
-        *)                             c="$C_DIM";  label="$s" ;;
+        success)                                c="$C_OK";   label=done ;;
+        running)                                c="$C_WARN"; label=building ;;
+        pending|created|"")                     c="$C_DIM";  label=queued ;;
+        blocked)                                c="$C_WARN"; label=needs-approval ;;
+        none)                                   c="$C_DIM";  label=no-build ;;
+        failure|error|killed|canceled|declined) c="$C_ERR";  label="$s" ;;
+        *)                                      c="$C_DIM";  label="$s" ;;
     esac
     printf '%s%s(%s)%s' "$c" "$r" "$label" "$C_RESET"
 }
@@ -909,7 +909,7 @@ ci_build_detail() {
 
 ci_terminal() {
     case "$1" in
-        success|failure|error|killed|skipped|declined) return 0 ;;
+        success|failure|error|killed|canceled|skipped|declined) return 0 ;;
         *) return 1 ;;
     esac
 }
