@@ -37,6 +37,14 @@ contains that packaging; it orchestrates it.
   `/staging`).
 * `build-order` — hand-maintained cross-repo dependency ordering (one line per
   parallelizable build step). Derived from `is_our_package` build-deps.
+* `publish-debs.sh` — the manual reprepro publish step, run on the repo host (not
+  a `deb-*` tool: it reads the builds tree, not checkouts). Host paths come from
+  `~/.publish-debs.conf`; keep host names and paths out of the script itself. The
+  target repo is chosen by the `DEBS_TO_REPO_SUFFIX` variable, which the user's
+  own (uncommitted) wrappers set before sourcing the script, so it must keep
+  working when sourced.
+* `build-latest.sh` — cron job on the builds file server maintaining its
+  `latest`/per-version symlinks.
 * `deb-migrate-hosts` — throwaway, not maintained. Left uncommitted (and
   deliberately *not* git-ignored, so it stays visible in `git status`).
 

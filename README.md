@@ -46,7 +46,8 @@ The built packages are then copied into the reprepro repositories at
 <https://deb.session.foundation> — this step is **manual and stays manual**
 (it uses a signing key that is never stored unencrypted). There are three repos:
 the root (public releases), `/beta` (semi-public testing), and `/staging`
-(build-only, used to chain dependency builds). Which repo a branch's CI build
+(build-only, used to chain dependency builds); `publish-debs.sh` (see
+[Publishing](#publishing)) does the copying. Which repo a branch's CI build
 pulls its dependencies from is set by `local repo_suffix` in that branch's
 `.drone.jsonnet`.
 
@@ -184,6 +185,32 @@ So, to add resolute everywhere:
 ./deb-add-distro-all ubuntu/resolute     # create + review branches locally
 ./deb-cascade        ubuntu/resolute     # push in order, monitor CI, pause for /staging
 ```
+
+## Publishing
+
+These two run on the servers rather than in a packaging checkout's workflow.
+
+### `DISTRO=<family>-<codename> DEBS_TO_REPO_SUFFIX=<suffix> ./publish-debs.sh [<project>...]`
+
+Run by hand on the reprepro host: includes the latest CI build of every project
+(or just the named ones, as builds-tree paths like `session-foundation/liboxenmq`)
+into the repo, for every distro in `build-distros.bash` or just `DISTRO`.
+`DEBS_TO_REPO_SUFFIX` picks `/beta` or `/staging` instead of the main repo. It
+lists everything and waits for confirmation, signs each distribution once, and
+stops at the first failure (a cancelled signing prompt included); re-running is
+safe. Ubuntu `.ddeb` debug-symbol packages are published along with the `.deb`s.
+
+Host-specific paths come from `~/.publish-debs.conf` (sourced as bash), which must
+set `BUILDS_DIR` (the local copy of the builds tree), `REPREPRO_DIR` (the main
+repo's reprepro base; the other repos are below it) and `SYNC_DEST` (an rsync
+destination the whole tree is mirrored to afterwards, or empty to skip that when
+publishing on the serving host itself).
+
+### `build-latest.sh [-n|--dry-run] [<builds root>]`
+
+Run every minute from cron on the builds file server: maintains the `latest` and
+per-version symlinks in each distro directory of the builds tree (which
+`publish-debs.sh` reads), plus some `*-LATEST` links for binary builds.
 
 ## Resume after conflicts
 
