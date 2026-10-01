@@ -25,7 +25,8 @@
 # the repo are skipped.
 
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
+# Resolved because the server's wrappers reach this script through a symlink.
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.bash"
 
 case "${1:-}" in -h|--help) usage 0 ;; esac
 
