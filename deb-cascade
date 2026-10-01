@@ -136,7 +136,7 @@ for line in "${steps[@]}"; do
     msg ""
     msg "${C_OK}CI passed${C_RESET} for step $stepno: ${todo[*]}"
     msg "Upload these to the $STAGING repo now (manual signing step)."
-    msg "On the main reprepro server run: ${C_BOLD}DEBS_TO_REPO_SUFFIX=$STAGING DISTRO=${branch//\//-} ./publish-debs.sh${C_RESET}"
+    msg "On the main reprepro server run: ${C_BOLD}DEBS_TO_REPO_SUFFIX=$STAGING DISTRO=$branch ./publish-debs.sh${C_RESET}"
     while :; do
         pend=()
         for r in "${todo[@]}"; do

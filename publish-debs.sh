@@ -3,12 +3,12 @@
 # publish-debs.sh — publishes the latest CI deb builds into a reprepro repository, then
 # optionally mirrors the repository tree to the serving host.
 #
-# Usage: [DISTRO=<family>-<codename>] [DEBS_TO_REPO_SUFFIX=<suffix>] ./publish-debs.sh [<project>...]
+# Usage: [DISTRO=<family>/<codename>] [DEBS_TO_REPO_SUFFIX=<suffix>] ./publish-debs.sh [<project>...]
 #
 #   <project>            builds-tree project to publish, e.g. session-foundation/liboxenmq
 #                        (default: all of them; see `projects` below)
-#   DISTRO               publish only this distro, e.g. debian-forky (default: every distro in
-#                        build-distros.bash)
+#   DISTRO               publish only this distro, e.g. debian/forky (or debian-forky)
+#                        (default: every distro in build-distros.bash)
 #   DEBS_TO_REPO_SUFFIX  publish to the repo at this path below the main one, e.g. /staging
 #                        (default: the main repo)
 #
@@ -43,35 +43,36 @@ repo_dir=$REPREPRO_DIR$suffix
 [ -d "$repo_dir/conf" ] || die "$repo_dir is not a reprepro repository"
 
 if [ -n "${DISTRO:-}" ]; then
+    [[ $DISTRO == */* ]] || DISTRO=${DISTRO/-//}
     dists=("$DISTRO")
 else
-    dists=("${distros[@]/\//-}")
+    dists=("${distros[@]}")
 fi
 
 if [ -z "$suffix${DISTRO:-}" ]; then
     # Only push these to main, not /beta or /staging
-    #dists+=(mint-{wilma,xia,zara,venessa,vera,victoria,virginia,ulyana,ulyssa,uma,una} kali-kali-rolling)
-    #dists+=(mint-{ulyana,ulyssa,uma,una} kali-kali-rolling)
-    dists+=(kali-kali-rolling)
+    #dists+=(mint/{wilma,xia,zara,venessa,vera,victoria,virginia,ulyana,ulyssa,uma,una} kali/kali-rolling)
+    #dists+=(mint/{ulyana,ulyssa,uma,una} kali/kali-rolling)
+    dists+=(kali/kali-rolling)
 fi
 
 # If a distro is in here, we load files from the other distro in here rather than the name directly
 declare -A distro_map
-for m in mint-{wilma,xia,zara}; do
-    distro_map["$m"]="ubuntu-noble"
+for m in mint/{wilma,xia,zara}; do
+    distro_map["$m"]="ubuntu/noble"
 done
-for m in mint-{venessa,vera,victoria,virginia}; do
-    distro_map["$m"]="ubuntu-jammy"
+for m in mint/{venessa,vera,victoria,virginia}; do
+    distro_map["$m"]="ubuntu/jammy"
 done
-for m in mint-{ulyana,ulyssa,uma,una}; do
-    distro_map["$m"]="ubuntu-focal"
+for m in mint/{ulyana,ulyssa,uma,una}; do
+    distro_map["$m"]="ubuntu/focal"
 done
-for m in kali-kali-rolling; do
-    distro_map["$m"]="debian-forky"
+for m in kali/kali-rolling; do
+    distro_map["$m"]="debian/forky"
 done
 
 # These packages are universal enough (mostly pure-Python modules) that they will work on
-# everything, and so we only build one for debian-sid and then use that one for everything.
+# everything, and so we only build one for debian/sid and then use that one for everything.
 declare -A sid_only=(
     [oxen-io/better_profanity]=1
     [oxen-io/session-pysogs]=1
@@ -95,8 +96,8 @@ find_distro_debs() {
     distro_debs=()
     for p in "${projects[@]}"; do
         dir=$from
-        if [ "$from" != debian-sid ] && [ -n "${sid_only[$p]:-}" ]; then dir=debian-sid; fi
-        dir=$BUILDS_DIR/$p/$dir/latest
+        if [ "$from" != debian/sid ] && [ -n "${sid_only[$p]:-}" ]; then dir=debian/sid; fi
+        dir=$BUILDS_DIR/$p/${dir/\//-}/latest
         distro_debs+=("$dir"/*.deb "$dir"/*.ddeb)
     done
 }
@@ -140,7 +141,7 @@ read -rp "Press enter to continue..."
 for x in "${dists[@]}"; do
     find_distro_debs "$x"
     [ "${#distro_debs[@]}" -gt 0 ] || continue
-    codename=${x#*-}
+    codename=${x#*/}
     # The .ddebs differ from .debs only in name, hence --ignore=extension.  Exporting separately
     # afterwards means each distribution is signed once; old pool files are kept until then
     # because the still-published indices refer to them.

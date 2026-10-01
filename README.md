@@ -190,7 +190,7 @@ So, to add resolute everywhere:
 
 These two run on the servers rather than in a packaging checkout's workflow.
 
-### `DISTRO=<family>-<codename> DEBS_TO_REPO_SUFFIX=<suffix> ./publish-debs.sh [<project>...]`
+### `DISTRO=<family>/<codename> DEBS_TO_REPO_SUFFIX=<suffix> ./publish-debs.sh [<project>...]`
 
 Run by hand on the reprepro host: includes the latest CI build of every project
 (or just the named ones, as builds-tree paths like `session-foundation/liboxenmq`)
