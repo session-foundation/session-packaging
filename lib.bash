@@ -24,11 +24,12 @@ BUILDS_HOST="builds.session.codes"
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RESET=$'\e[0m'  C_ERR=$'\e[1;31m'  C_WARN=$'\e[33m'   C_OK=$'\e[1;32m'
     C_HDR=$'\e[1;36m' C_PKG=$'\e[1;35m'  C_VER=$'\e[1;36m'  C_DIM=$'\e[2m'  C_BOLD=$'\e[1m'
+    C_REPO=$'\e[1;34m'
     # Distro brand colours (24-bit): Debian red #D70A53, Ubuntu orange #E95420.
     C_DEB=$'\e[1;38;2;215;10;83m' C_UBU=$'\e[1;38;2;233;84;32m'
 else
     C_RESET='' C_ERR='' C_WARN='' C_OK='' C_HDR='' C_PKG='' C_VER='' C_DIM='' C_BOLD=''
-    C_DEB='' C_UBU=''
+    C_REPO='' C_DEB='' C_UBU=''
 fi
 
 # Wrap text in a colour (helpers for call sites). cpkg colours each whitespace-

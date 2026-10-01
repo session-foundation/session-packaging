@@ -132,7 +132,7 @@ for x in "${dists[@]}"; do
         msg "${C_WARN}Nothing to upload to $(cpkg "$x")${C_RESET}"
         continue
     fi
-    msg "${C_WARN}About to upload ${#distro_debs[@]} files to $(cpkg "$x") ${C_BOLD}${suffix:-(MAIN REPOSITORY)}${C_RESET}${C_WARN}:${C_RESET}"
+    msg "${C_WARN}About to upload ${#distro_debs[@]} files to $(cpkg "$x") ${C_REPO}${suffix:-(MAIN REPOSITORY)}${C_RESET}${C_WARN}:${C_RESET}"
     printf '%s\n' "${distro_debs[@]##*/}" | sort | column >&2
 done
 msg ""
