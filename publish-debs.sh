@@ -166,7 +166,7 @@ for x in "${dists[@]}"; do
         project_debs "$x" "$p"
         [ "${#debs[@]}" -gt 0 ] || continue
         msg "  $C_PKG${p%%/*}/$C_RESET$C_PROJ${p#*/}$C_RESET ${C_DIM}(${#debs[@]} files)${C_RESET}"
-        compact_names "${debs[@]}" | sort | column -c $((width - 4)) | sed 's/^/    /' >&2
+        compact_names "${debs[@]}" | sort | column -c $((width - 4)) | expand | sed 's/^/    /' >&2
     done
 done
 msg ""
