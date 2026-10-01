@@ -89,16 +89,22 @@ fi
 
 shopt -s nullglob
 
-# Sets distro_debs to the packages to publish into distro $1.  (The build directories also hold
-# .buildinfo files, which aren't published.)
+# Sets debs to the packages of project $2 to publish into distro $1.  (The build directories also
+# hold .buildinfo files, which aren't published.)
+project_debs() {
+    local dir=${distro_map[$1]:-$1}
+    if [ "$dir" != debian/sid ] && [ -n "${sid_only[$2]:-}" ]; then dir=debian/sid; fi
+    dir=$BUILDS_DIR/$2/${dir/\//-}/latest
+    debs=("$dir"/*.deb "$dir"/*.ddeb)
+}
+
+# Sets distro_debs to all the packages to publish into distro $1.
 find_distro_debs() {
-    local from=${distro_map[$1]:-$1} p dir
+    local p
     distro_debs=()
     for p in "${projects[@]}"; do
-        dir=$from
-        if [ "$from" != debian/sid ] && [ -n "${sid_only[$p]:-}" ]; then dir=debian/sid; fi
-        dir=$BUILDS_DIR/$p/${dir/\//-}/latest
-        distro_debs+=("$dir"/*.deb "$dir"/*.ddeb)
+        project_debs "$1" "$p"
+        distro_debs+=("${debs[@]}")
     done
 }
 
@@ -143,6 +149,11 @@ run_reprepro() {
 # would carry on to the next distro (and its signing prompt).
 trap 'printf "\n" >&2; die "interrupted"' INT
 
+# column can't see the terminal's width through the indenting pipe below.
+width=$(stty size <&2 2>/dev/null) || width=
+width=${width#* }
+[ "${width:-0}" -gt 4 ] || width=80
+
 for x in "${dists[@]}"; do
     find_distro_debs "$x"
     msg ""
@@ -151,7 +162,12 @@ for x in "${dists[@]}"; do
         continue
     fi
     msg "${C_WARN}About to upload ${#distro_debs[@]} files to $(cpkg "$x") ${C_REPO}${suffix:-(MAIN REPOSITORY)}${C_RESET}${C_WARN}:${C_RESET}"
-    compact_names "${distro_debs[@]}" | sort | column >&2
+    for p in "${projects[@]}"; do
+        project_debs "$x" "$p"
+        [ "${#debs[@]}" -gt 0 ] || continue
+        msg "  $C_PKG${p%%/*}/$C_RESET$C_PROJ${p#*/}$C_RESET ${C_DIM}(${#debs[@]} files)${C_RESET}"
+        compact_names "${debs[@]}" | sort | column -c $((width - 4)) | sed 's/^/    /' >&2
+    done
 done
 msg ""
 read -rp "Press enter to continue..."
