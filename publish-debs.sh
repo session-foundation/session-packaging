@@ -111,10 +111,26 @@ find_distro_debs() {
     done
 }
 
+# Prints words $@ as one brace expression, with any ending they all share moved after the braces:
+# amd64 arm64 -> {amd,arm}64.  Only endings, as a shared start gives the unreadable a{md,rm}64.
+brace_join() {
+    local w suffix=$1 list=
+    for w; do
+        while [[ $w != *"$suffix" ]]; do suffix=${suffix:1}; done
+    done
+    for w; do
+        # Each alternative must keep at least one character.
+        while [ ${#w} -le ${#suffix} ]; do suffix=${suffix:1}; done
+    done
+    for w; do list+=,${w%"$suffix"}; done
+    printf '{%s}%s' "${list#,}" "$suffix"
+}
+
 # Prints the basenames of package files $@ (<name>_<version>_<arch>.<ext>), merging each package's
-# per-architecture files into one <name>_<version>_{amd64,arm64,...}.<ext> line.
+# per-architecture files into one <name>_<version>_{amd64,i386,...}.<ext> line.
 compact_names() {
     local f stem key a
+    local -a list
     local -A arches=()
     for f; do
         f=${f##*/}
@@ -123,8 +139,9 @@ compact_names() {
         arches[$key]+=,${stem##*_}
     done
     for key in "${!arches[@]}"; do
-        a=${arches[$key]#,}
-        [[ $a == *,* ]] && a="{$a}"
+        IFS=, read -ra list <<< "${arches[$key]#,}"
+        a=${list[0]}
+        [ "${#list[@]}" -eq 1 ] || a=$(brace_join "${list[@]}")
         printf '%s_%s.%s\n' "${key%$'\t'*}" "$a" "${key#*$'\t'}"
     done
 }
