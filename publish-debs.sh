@@ -86,7 +86,8 @@ if [ "${#projects[@]}" -eq 0 ]; then
         jagerman/{libonionrequests,ethyl}
     )
 fi
-# C collation so that the listing groups by org (other locales ignore the '/' and '-').
+# C collation here and for the package names in the listing, because other locales ignore
+# punctuation (and so wouldn't group projects by org).
 mapfile -t projects < <(printf '%s\n' "${projects[@]}" | LC_ALL=C sort)
 
 shopt -s nullglob
@@ -168,7 +169,7 @@ for x in "${dists[@]}"; do
         project_debs "$x" "$p"
         [ "${#debs[@]}" -gt 0 ] || continue
         msg "  $C_PKG${p%%/*}/$C_RESET$C_PROJ${p#*/}$C_RESET ${C_DIM}(${#debs[@]} files)${C_RESET}"
-        compact_names "${debs[@]}" | sort | column -c $((width - 4)) | expand | sed 's/^/    /' >&2
+        compact_names "${debs[@]}" | LC_ALL=C sort | column -c $((width - 4)) | expand | sed 's/^/    /' >&2
     done
 done
 msg ""
