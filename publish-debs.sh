@@ -86,6 +86,8 @@ if [ "${#projects[@]}" -eq 0 ]; then
         jagerman/{libonionrequests,ethyl}
     )
 fi
+# C collation so that the listing groups by org (other locales ignore the '/' and '-').
+mapfile -t projects < <(printf '%s\n' "${projects[@]}" | LC_ALL=C sort)
 
 shopt -s nullglob
 
