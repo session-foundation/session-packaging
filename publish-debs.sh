@@ -102,6 +102,24 @@ find_distro_debs() {
     done
 }
 
+# Prints the basenames of package files $@ (<name>_<version>_<arch>.<ext>), merging each package's
+# per-architecture files into one <name>_<version>_{amd64,arm64,...}.<ext> line.
+compact_names() {
+    local f stem key a
+    local -A arches=()
+    for f; do
+        f=${f##*/}
+        stem=${f%.*}
+        key=${stem%_*}$'\t'${f##*.}
+        arches[$key]+=,${stem##*_}
+    done
+    for key in "${!arches[@]}"; do
+        a=${arches[$key]#,}
+        [[ $a == *,* ]] && a="{$a}"
+        printf '%s_%s.%s\n' "${key%$'\t'*}" "$a" "${key#*$'\t'}"
+    done
+}
+
 # reprepro reports routine conditions on stderr alongside real errors; the routine ones are passed
 # through plain and everything else is shown in red.
 highlight_errors() {
@@ -133,7 +151,7 @@ for x in "${dists[@]}"; do
         continue
     fi
     msg "${C_WARN}About to upload ${#distro_debs[@]} files to $(cpkg "$x") ${C_REPO}${suffix:-(MAIN REPOSITORY)}${C_RESET}${C_WARN}:${C_RESET}"
-    printf '%s\n' "${distro_debs[@]##*/}" | sort | column >&2
+    compact_names "${distro_debs[@]}" | sort | column >&2
 done
 msg ""
 read -rp "Press enter to continue..."
