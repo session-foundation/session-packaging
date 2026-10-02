@@ -80,11 +80,17 @@ declare -A sid_only=(
 
 projects=("$@")
 if [ "${#projects[@]}" -eq 0 ]; then
-    projects=(oxen-io/oxen-{core,backports/main}
+    projects=(oxen-io/oxen-core
         session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession-util,libsession-python,session-router,session-storage-server,pyoxenc}
         oxen-io/{lokinet,session-pysogs,better_profanity}
         jagerman/{libonionrequests,ethyl}
     )
+    # session-backports uploads each package it builds to a directory of its own.
+    for p in "$BUILDS_DIR"/session-foundation/session-backports/*/; do
+        [ -d "$p" ] || continue
+        p=${p%/}
+        projects+=("session-foundation/session-backports/${p##*/}")
+    done
 fi
 # C collation here and for the package names in the listing, because other locales ignore
 # punctuation (and so wouldn't group projects by org).

@@ -1,7 +1,9 @@
 #!/bin/bash
 #
 # Maintains convenience symlinks in the builds.session.codes tree; run every minute from cron on the
-# build storage host.  In each <org>/<project>/{debian,ubuntu}-<codename> directory:
+# build storage host.  In each <org>/<project>/{debian,ubuntu}-<codename> directory (and, for
+# session-backports, which has a level per package,
+# session-foundation/session-backports/<package>/{debian,ubuntu}-<codename>):
 #
 #     latest          -> the newest deb-* build
 #     <deb version>   -> the newest deb-* build of that version, e.g.
@@ -128,7 +130,7 @@ link_newest() {
     set_link "${newest#"${link%/*}"/}" "$link"
 }
 
-for dir in "$root"/*/*/{debian,ubuntu}-*/ "$root"/oxen-io/oxen-backports/*/{debian,ubuntu}-*/; do
+for dir in "$root"/*/*/{debian,ubuntu}-*/ "$root"/session-foundation/session-backports/*/{debian,ubuntu}-*/; do
     dir=${dir%/}
     changed "$dir" && update_deb_dir "$dir"
 done
