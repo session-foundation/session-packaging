@@ -5,7 +5,8 @@
 #
 # Usage: [DISTRO=<family>/<codename>] [DEBS_TO_REPO_SUFFIX=<suffix>] ./publish-debs.sh [<project>...]
 #
-#   <project>            builds-tree project to publish, e.g. session-foundation/liboxenmq
+#   <project>            builds-tree project to publish, e.g. session-foundation/liboxenmq; the
+#                        session-foundation/ can be left off (liboxenmq, session-backports/ngtcp2)
 #                        (default: all of them; see `projects` below)
 #   DISTRO               publish only this distro, e.g. debian/forky (or debian-forky)
 #                        (default: every distro in build-distros.bash)
@@ -78,7 +79,14 @@ declare -A sid_only=(
     [oxen-io/session-pysogs]=1
 )
 
-projects=("$@")
+projects=()
+for p; do
+    if [ ! -d "$BUILDS_DIR/$p" ] && [ -d "$BUILDS_DIR/session-foundation/$p" ]; then
+        p=session-foundation/$p
+    fi
+    [ -d "$BUILDS_DIR/$p" ] || die "$p not found in $BUILDS_DIR (or under session-foundation/)"
+    projects+=("$p")
+done
 if [ "${#projects[@]}" -eq 0 ]; then
     projects=(oxen-io/oxen-core
         session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession-util,libsession-python,session-router,session-storage-server,pyoxenc}
@@ -180,8 +188,10 @@ width=$(stty size <&2 2>/dev/null) || width=
 width=${width#* }
 [ "${width:-0}" -gt 4 ] || width=80
 
+total=0
 for x in "${dists[@]}"; do
     find_distro_debs "$x"
+    total=$((total + ${#distro_debs[@]}))
     msg ""
     if [ "${#distro_debs[@]}" -eq 0 ]; then
         msg "${C_WARN}Nothing to upload to $(cpkg "$x")${C_RESET}"
@@ -196,6 +206,7 @@ for x in "${dists[@]}"; do
     done
 done
 msg ""
+[ "$total" -gt 0 ] || die "no packages found to upload"
 read -rp "Press enter to continue..."
 
 for x in "${dists[@]}"; do
