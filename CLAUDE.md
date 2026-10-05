@@ -114,9 +114,13 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
 * **Version parsing** reads `project(... VERSION x.y.z ...)` from the top-level
   `CMakeLists.txt` (often multiline) via an inline `python3` snippet in
   `parse_cmake_version`.
-* **The dep pre-check** (`deb-push`) can only vet a dependency whose source repo
-  is checked out here; "ours" is decided by the `is_our_package` heuristic
-  (`*session*|*oxen*|*loki*|*sogs*`). Extend that pattern for new families.
+* **The dep pre-check** (`deb-push`) vets a versioned build-dep if it's "ours"
+  (the `is_our_package` heuristic, `*session*|*oxen*|*loki*|*sogs*`; extend it for
+  new families), which must then be in our repo, or if our repo carries it for
+  that distro at all (backports such as ngtcp2, built by `~/src/session-backports`).
+  Anything else is assumed to come from the distro archive and isn't checked.
+  The catch: a backport the distro could satisfy on its own still fails the check
+  if our repo has an older one.
 
 ## Migrating a repo's packaging CI to `override-deb.star`
 

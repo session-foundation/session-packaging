@@ -835,9 +835,11 @@ repo_pkg_version() {
     rm -f "$f"
 }
 
-# Check that every "ours" build-dep of <branch> is available at the required
-# version in the branch's own target repo (from its CI config), for EVERY
-# architecture that branch's CI builds — not just amd64. A dep that exists
+# Check that every versioned build-dep of <branch> that comes from our repo — one
+# of "ours" (is_our_package), or anything else the repo carries for that distro,
+# like the ngtcp2 backports — is available at the required version in the
+# branch's own target repo (from its CI config), for EVERY architecture that
+# branch's CI builds — not just amd64. A dep that exists
 # for amd64 but is missing for arm64/armhf/i386 still fails those builds, so the
 # pre-check must cover them. Prints problems to stderr; returns non-zero if any dep
 # is unsatisfied on any built arch.
@@ -873,7 +875,6 @@ dep_check() {
     for entry in "${entries[@]}"; do
         pkg="$(printf '%s' "$entry" | sed -e 's/^[ \t]*//' -e 's/[ \t(|].*//')"
         [ -n "$pkg" ] || continue
-        is_our_package "$pkg" || continue
         ver="$(printf '%s' "$entry" | sed -n 's/.*(>=[ \t]*\([^)]*\)).*/\1/p' | tr -d ' ')"
         [ -n "$ver" ] || continue    # no minimum version constraint -> nothing to verify
         miss=(); old_vers=(); old_arches=()
@@ -890,6 +891,10 @@ dep_check() {
                 old_arches[$avail]+="${old_arches[$avail]:+, }$arch"
             fi
         done
+        # Other packages are vetted only if our repo carries them (backports such as
+        # ngtcp2); one it has for no arch at all comes from the distro's own archive,
+        # which this doesn't check.
+        is_our_package "$pkg" || [ "${#miss[@]}" -lt "${#arches[@]}" ] || continue
         if [ "${#miss[@]}" -gt 0 ]; then
             printf -v list '%s, ' "${miss[@]}"
             warn "[$(cpkg "$b")] $(cpkg "$pkg") (>= $(cver "$ver")) not published for: ${list%, } — https://$DEB_REPO_HOST$suffix ($distro)"

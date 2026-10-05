@@ -146,9 +146,11 @@ several space- or comma-separated (`debian/sid forky` or `sid,forky`). No
 argument = all. If any glob matches nothing, nothing is pushed. Before pushing it
 checks that CI would actually run each branch's **packaging build**, not
 upstream's own CI (see the CI config notes above); if not, nothing is pushed. It
-then runs a **dependency pre-check**: for each branch it verifies every
-Session-family build-dependency is available at the required version in that
-branch's target reprepro repo, **for every architecture that branch builds** (per
+then runs a **dependency pre-check**: for each branch it verifies every versioned
+build-dependency that comes from our repo — Session-family packages, and anything
+else the repo carries for that distro, such as the ngtcp2 backports — is available
+at the required version in that branch's target reprepro repo, **for every
+architecture that branch builds** (per
 its CI config, not just amd64); if any is missing on any built arch, nothing is
 pushed (an unsatisfied dep is a guaranteed CI failure — publish the dependency
 first, or drop that arch from the branch's CI config).

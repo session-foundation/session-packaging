@@ -17,7 +17,8 @@
 # checks that CI would run each branch's packaging build rather than upstream's own
 # CI (which happens when upstream moves to .woodpecker/ configs and the branch has
 # no .woodpecker/override-deb.star yet), and a dependency pre-check verifies that
-# every "ours" build-dependency of each branch is available at the required version
+# every versioned build-dependency of each branch that comes from our repo ("ours",
+# or a backport the repo carries, like ngtcp2) is available at the required version
 # in that branch's target reprepro repo, for every architecture that branch builds
 # (not just amd64). If either check fails for any branch, nothing is pushed.
 #
