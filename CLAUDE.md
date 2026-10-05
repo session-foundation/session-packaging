@@ -79,13 +79,23 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
 
 ## Gotchas
 
-* **CI is Woodpecker, but the config is still `.drone.jsonnet`**, which the
-  server still accepts (it adds a "DEPRECATED" notice workflow to each
-  pipeline, which `ci_build_detail` hides). Build links need Woodpecker's
-  numeric repo id (`ci_repo_id`), not the slug.
-* **`.drone.jsonnet` conflicts are expected** on every upstream merge (the
-  packaging branch fully replaces it). They're auto-resolved `--ours`; only
-  *other* conflicts stop the run.
+* **CI is Woodpecker; packaging CI configs are mid-migration.** Migrated branches
+  use `.woodpecker/override-deb.star`: the server's config extension
+  (`~/src/session-woodpecker-config`) runs only `.woodpecker/override*` files when
+  any exist, so upstream's `.woodpecker/` merges in untouched. Unmigrated branches
+  still carry a replaced `.drone.jsonnet`, which the server still accepts (it adds
+  a "DEPRECATED" notice workflow to each pipeline, which `ci_build_detail` hides).
+  Read CI settings via the `ci_*` helpers in lib.bash, never by hard-coding either
+  file. Build links need Woodpecker's numeric repo id (`ci_repo_id`), not the slug.
+* **Upstream moving to `.woodpecker/` silently shadows a packaging
+  `.drone.jsonnet`** (Woodpecker's search order puts `.woodpecker/` first), and
+  CI then runs upstream's full CI instead of the package build. `ci_config_check`
+  catches it: `deb-push` refuses, `deb-version-bump` warns. `ci_config_used`
+  mirrors the server's `WOODPECKER_DEFAULT_PIPELINE_CONFIGS` order and must be
+  kept in step with it.
+* **`.drone.jsonnet` conflicts are expected** on every upstream merge into an
+  unmigrated branch (the packaging branch fully replaces it). They're
+  auto-resolved `--ours`; only *other* conflicts stop the run.
 * **Two conflict points per branch** in `deb-version-bump`: the `git merge` and
   the `gbp pq rebase` (the rebase is the more common one). `deb-add-patch`/
   `deb-pkg-update` conflict at the `git cherry-pick`.

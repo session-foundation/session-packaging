@@ -36,11 +36,31 @@ with a per-distro version suffix.
   regenerates `debian/control` after the changelog is bumped. The tools run that
   script automatically when present.
 
-Builds happen in CI: the `debian/*` / `ubuntu/*` branches carry a completely
-replaced `.drone.jsonnet` that builds the package and uploads the artifacts (via
+Builds happen in CI: the `debian/*` / `ubuntu/*` branches carry their own CI
+config that builds the package and uploads the artifacts (via
 `debian/ci-upload.sh`) to the builds file server. Pushing a branch triggers its
 build — so **none of these tools push automatically**; you inspect locally and
 push with `deb-push` when ready.
+
+The packaging CI config is one of:
+
+* `.woodpecker/override-deb.star` (Woodpecker Starlark). The CI server's config
+  extension ([session-woodpecker-config]) uses any `.woodpecker/override*`
+  files in place of the rest of `.woodpecker/`, so upstream's own `.woodpecker/`
+  configs merge into the packaging branches unchanged and conflict-free, and are
+  ignored there.
+* A completely replaced `.drone.jsonnet`, on branches not yet migrated. This only
+  works while upstream has no `.woodpecker/` (or `.woodpecker.*`) config: once
+  upstream moves to one, it takes priority and CI runs upstream's builds instead.
+  `deb-version-bump` warns when a merge brings that in, and `deb-push` refuses to
+  push such a branch until it has an `override-deb.star`.
+
+Both define the same settings as plain assignments the tools read: `distro`,
+`repo_suffix`, the builder image (`builder_image`, `distro_docker` in jsonnet) and
+the architectures built (an `arches` list, or the `deb_pipeline(...)` calls in
+jsonnet).
+
+[session-woodpecker-config]: https://github.com/session-foundation/session-woodpecker-config
 
 The built packages are then copied into the reprepro repositories at
 <https://deb.session.foundation> — this step is **manual and stays manual**
@@ -48,8 +68,7 @@ The built packages are then copied into the reprepro repositories at
 the root (public releases), `/beta` (semi-public testing), and `/staging`
 (build-only, used to chain dependency builds); `publish-debs.sh` (see
 [Publishing](#publishing)) does the copying. Which repo a branch's CI build
-pulls its dependencies from is set by `local repo_suffix` in that branch's
-`.drone.jsonnet`.
+pulls its dependencies from is set by `repo_suffix` in that branch's CI config.
 
 ## Tools
 
@@ -124,13 +143,15 @@ accepted.
 Push branches to origin (triggering CI). Globs match the active distro list, e.g.
 `debian/sid`, `'debian/*'`, `'ubuntu/*'` (quote them), or bare codenames. Give
 several space- or comma-separated (`debian/sid forky` or `sid,forky`). No
-argument = all. If any glob matches nothing, nothing is pushed. Before pushing it runs a **dependency
-pre-check**: for each branch it verifies every Session-family build-dependency is
-available at the required version in that branch's target reprepro repo, **for
-every architecture that branch builds** (the `deb_pipeline` debarches in its
-`.drone.jsonnet`, not just amd64); if any is missing on any built arch, nothing is
+argument = all. If any glob matches nothing, nothing is pushed. Before pushing it
+checks that CI would actually run each branch's **packaging build**, not
+upstream's own CI (see the CI config notes above); if not, nothing is pushed. It
+then runs a **dependency pre-check**: for each branch it verifies every
+Session-family build-dependency is available at the required version in that
+branch's target reprepro repo, **for every architecture that branch builds** (per
+its CI config, not just amd64); if any is missing on any built arch, nothing is
 pushed (an unsatisfied dep is a guaranteed CI failure — publish the dependency
-first, or drop that arch from the branch's `.drone.jsonnet`).
+first, or drop that arch from the branch's CI config).
 
 After pushing it **watches the triggered CI builds** to completion — the same
 live, refreshing per-branch status display `deb-cascade` uses, with links to each
@@ -151,7 +172,7 @@ re-run `deb-push`: re-running `deb-ci-restart` would restart everything again.
 Create packaging for a new distro release. New `debian/*` branches fork from
 `debian/sid`; new `ubuntu/*` branches fork from the newest existing `ubuntu/*`
 branch. The `~suffix` must already be defined in `build-distros.bash`. Makes the
-three standard edits (`.drone.jsonnet` distro, `debian/gbp.conf`
+three standard edits (the CI config's `distro`, `debian/gbp.conf`
 `debian-branch`+`dist`, and a new changelog entry) and commits. It also checks
 that the builder docker image for the new codename exists first. Remember to add
 the new branch to the `distros` list in `build-distros.bash` when it should join
@@ -216,8 +237,8 @@ per-version symlinks in each distro directory of the builds tree (which
 
 `deb-version-bump`, `deb-add-patch`, and `deb-pkg-update` operate over ~10
 branches and can hit merge / rebase / cherry-pick conflicts. `.drone.jsonnet`
-conflicts are auto-resolved (keep the packaging branch's copy); anything else
-stops with instructions. Progress is recorded in
+conflicts (on branches still using it) are auto-resolved (keep the packaging
+branch's copy); anything else stops with instructions. Progress is recorded in
 `<repo>/.git/session-pkg-state`. To resume: resolve the conflict, complete the
 git operation (`git merge/rebase/cherry-pick --continue`), and **re-run the exact
 same command** — it skips completed branches and continues. To abandon, delete

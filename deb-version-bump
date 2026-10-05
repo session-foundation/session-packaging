@@ -273,4 +273,14 @@ proc_bump() {
 }
 
 run_multibranch proc_bump
+
+# The merge may have brought in upstream .woodpecker/ configs that shadow a
+# packaging .drone.jsonnet. That needs migrating by hand, so only warn here; deb-push
+# refuses to push such branches.
+ci_ok=1
+for b in "${distros[@]}"; do
+    branch_exists "$b" || continue
+    ci_config_check "$b" || ci_ok=0
+done
+[ "$ci_ok" = 1 ] || warn "upstream's CI config would replace the packaging build on these branches: migrate them to $CI_OVERRIDE before pushing"
 push_hint

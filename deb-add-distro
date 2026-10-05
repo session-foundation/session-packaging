@@ -10,7 +10,7 @@
 #
 # New debian/* branches fork from debian/sid; new ubuntu/* branches fork from the
 # newest existing ubuntu/* branch. The branch's ~suffix must already be defined
-# in build-distros.bash. Makes the three standard edits (.drone.jsonnet distro,
+# in build-distros.bash. Makes the three standard edits (CI config distro,
 # debian/gbp.conf debian-branch + dist, and a new changelog entry with the new
 # codename + suffix) and commits. It does NOT push (use deb-push).
 

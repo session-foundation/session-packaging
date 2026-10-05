@@ -269,17 +269,110 @@ checkout_uptodate() {
 }
 
 # ---------------------------------------------------------------------------
+# packaging CI config
+# ---------------------------------------------------------------------------
+# A packaging branch's CI config is .woodpecker/override-deb.star: any
+# .woodpecker/override* config files replace everything else in .woodpecker/ (a
+# session-woodpecker-config feature), so upstream's own .woodpecker/ configs merge
+# in unchanged. Branches not yet migrated to it still use a fully replaced
+# .drone.jsonnet. Both write their settings as simple assignments that the helpers
+# below read: distro, repo_suffix, the builder image (`builder_image`, or
+# `distro_docker` in jsonnet) and the arches built.
+CI_OVERRIDE=".woodpecker/override-deb.star"
+
+# <ref>'s .woodpecker/override* config files, one per line.
+ci_overrides() {
+    git ls-tree --name-only "$1" .woodpecker/ 2>/dev/null |
+        grep -E '^\.woodpecker/override[^/]*\.(ya?ml|jsonnet|star)$'
+}
+
+# <ref>'s packaging CI config files, one per line: its overrides, or .drone.jsonnet.
+ci_files() {
+    ci_overrides "$1" || printf '%s\n' .drone.jsonnet
+}
+
+# The contents of all of <ref>'s packaging CI config files.
+ci_source() {
+    local f
+    while read -r f; do git show "$1:$f" 2>/dev/null; done < <(ci_files "$1")
+}
+
+# Read a string setting (`<name> = "..."`, or jsonnet `local <name> = '...';`)
+# from <ref>'s packaging CI config.
+ci_setting() {
+    ci_source "$1" | sed -nE "s/^(local )?$2 = ['\"]([^'\"]*)['\"].*/\2/p" | head -1
+}
+
+# The Debian architectures <ref>'s CI builds, one per line: the Starlark `arches`
+# list, or the jsonnet deb_pipeline(...) invocations (each `debarch='...'`,
+# defaulting to amd64; the deb_pipeline definition line, `... ) = {`, is skipped).
+ci_debarches() {
+    ci_source "$1" | awk '
+        /^arches = \[/ {
+            s = $0; sub(/^arches = \[/, "", s); sub(/\].*/, "", s)
+            while (match(s, /[a-z0-9]+/)) { print substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH) }
+        }
+        /deb_pipeline\(/ && $0 !~ /deb_pipeline\([^)]*\)[ \t]*=/ {
+            if (match($0, /debarch=.[a-z0-9]+/)) {
+                a = substr($0, RSTART, RLENGTH); sub(/debarch=./, "", a); print a
+            } else print "amd64"
+        }
+    ' | awk 'NF && !seen[$0]++'
+}
+
+# The config Woodpecker would use for <ref>, one file per line: the first of the
+# server's WOODPECKER_DEFAULT_PIPELINE_CONFIGS that exists (.woodpecker/ if it has
+# any config files, then .woodpecker.{jsonnet,star,yaml,yml}, then .drone.jsonnet),
+# with any override files standing in for all of .woodpecker/. Prints
+# `.woodpecker/` for the directory's (non-override) files, or nothing if there is
+# no config. Must be kept in step with the server's search order.
+ci_config_used() {
+    local ref="$1" f
+    if git ls-tree --name-only "$ref" .woodpecker/ 2>/dev/null | grep -qE '\.(ya?ml|jsonnet|star)$'; then
+        ci_overrides "$ref" || printf '%s\n' .woodpecker/
+        return
+    fi
+    for f in .woodpecker.jsonnet .woodpecker.star .woodpecker.yaml .woodpecker.yml .drone.jsonnet; do
+        git cat-file -e "$ref:$f" 2>/dev/null && { printf '%s\n' "$f"; return; }
+    done
+}
+
+# Check that pushing <branch> would run its packaging build: an upstream that
+# switches to .woodpecker/ configs shadows a packaging .drone.jsonnet, and CI then
+# runs upstream's builds instead. Warns and returns non-zero if not.
+ci_config_check() {
+    local b="$1" ref f
+    local -a used
+    ref="$(branch_ref "$b")"
+    mapfile -t used < <(ci_config_used "$ref")
+    if [ "${#used[@]}" -eq 0 ]; then
+        warn "[$(cpkg "$b")] has no CI config at all"
+        return 1
+    fi
+    case "${used[0]}" in
+        .woodpecker/override*|.drone.jsonnet) ;;
+        *)  warn "[$(cpkg "$b")] CI would run upstream's ${used[0]} instead of the packaging build: add $CI_OVERRIDE"
+            return 1 ;;
+    esac
+    for f in "${used[@]}"; do
+        git show "$ref:$f" | grep -q 'debian/ci-upload\.sh' && return 0
+    done
+    warn "[$(cpkg "$b")] CI would run ${used[*]}, which isn't a packaging build (it never runs debian/ci-upload.sh)"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # distro-branch creation (deb-add-distro, and deb-version-bump --create-missing)
 # ---------------------------------------------------------------------------
 # Refuse if the builder docker image for <codename> doesn't exist. The image name
-# pattern comes from <baseref>'s .drone.jsonnet distro_docker line.
+# pattern comes from <baseref>'s CI config builder image line.
 check_builder_image() {
     local baseref="$1" codename="$2" line prefix suffix image
-    line="$(git show "$baseref:.drone.jsonnet" 2>/dev/null | grep -m1 'distro_docker *=')" ||
-        { warn "no distro_docker line in .drone.jsonnet; skipping builder-image check"; return 0; }
-    prefix="$(printf '%s' "$line" | sed -n "s/.*=[ \t]*'\([^']*\)'[ \t]*+[ \t]*distro.*/\1/p")"
-    suffix="$(printf '%s' "$line" | sed -n "s/.*distro[ \t]*+[ \t]*'\([^']*\)'.*/\1/p")"
-    [ -n "$prefix" ] || { warn "cannot parse distro_docker; skipping builder-image check"; return 0; }
+    line="$(ci_source "$baseref" | grep -m1 -E '^(local )?(builder_image|distro_docker) =')" ||
+        { warn "no builder image in the CI config; skipping builder-image check"; return 0; }
+    prefix="$(printf '%s' "$line" | sed -nE "s/.*= *['\"]([^'\"]*)['\"] *\+ *distro.*/\1/p")"
+    suffix="$(printf '%s' "$line" | sed -nE "s/.*distro *\+ *['\"]([^'\"]*)['\"].*/\1/p")"
+    [ -n "$prefix" ] || { warn "cannot parse the CI config's builder image; skipping builder-image check"; return 0; }
     image="$prefix$codename$suffix"
     msg "Checking builder image: $image"
     if command -v docker >/dev/null 2>&1; then
@@ -294,10 +387,10 @@ check_builder_image() {
 }
 
 # Create a new distro branch <newbranch> by forking <base> (default: its family
-# base via base_for) and applying the structural edits: .drone.jsonnet distro,
+# base via base_for) and applying the structural edits: the CI config's distro,
 # debian/gbp.conf debian-branch + dist, and origin tracking (so a later bare `git
 # push` targets origin/<newbranch>, which doesn't exist yet, rather than the base).
-# Leaves the branch checked out with those two files STAGED but not committed, and
+# Leaves the branch checked out with those files STAGED but not committed, and
 # touches neither the changelog nor debian/control — the caller sets the version
 # and commits (deb-add-distro: a same-version entry; deb-version-bump: the
 # new-version bump). Sets CREATED_BASE / CREATED_BASEREF. The caller is responsible
@@ -317,9 +410,11 @@ create_distro_branch() {
     git config "branch.$newbranch.remote" origin
     git config "branch.$newbranch.merge" "refs/heads/$newbranch"
 
-    sed -i "s/^local distro = '[^']*';/local distro = '$codename';/" .drone.jsonnet
-    grep -q "^local distro = '$codename';" .drone.jsonnet ||
-        die "failed to update 'local distro' in .drone.jsonnet"
+    local -a cifiles
+    mapfile -t cifiles < <(ci_files HEAD)
+    sed -i -E "s/^(local )?distro = (['\"])[^'\"]*(['\"])/\1distro = \2$codename\3/" "${cifiles[@]}"
+    grep -qE "^(local )?distro = ['\"]$codename['\"]" "${cifiles[@]}" ||
+        die "failed to update distro in ${cifiles[*]}"
 
     sed -i -e "s#^debian-branch = .*#debian-branch = $newbranch#" \
            -e "s#^dist = .*#dist = $codename#" debian/gbp.conf
@@ -328,7 +423,7 @@ create_distro_branch() {
     grep -q "^dist = $codename\$" debian/gbp.conf ||
         die "failed to update dist in debian/gbp.conf"
 
-    git add .drone.jsonnet debian/gbp.conf
+    git add "${cifiles[@]}" debian/gbp.conf
 }
 
 # Strip branch <2>'s ~suffix off version <1>, e.g. (1.3.0-2~deb13, debian/trixie)
@@ -349,7 +444,7 @@ strip_suffix() {
 create_distro_release() {
     local newbranch="$1" base="${2:-}" codename basever title
     codename="${newbranch#*/}"
-    create_distro_branch "$newbranch" "$base"   # sets CREATED_BASE/CREATED_BASEREF; stages drone/gbp
+    create_distro_branch "$newbranch" "$base"   # sets CREATED_BASE/CREATED_BASEREF; stages CI config/gbp
     basever="$(strip_suffix "$(changelog_version "$CREATED_BASEREF")" "$CREATED_BASE")"
     CREATED_VERSION="$basever${version_suffix[$newbranch]}"
     title="${codename^} deb"
@@ -357,7 +452,7 @@ create_distro_release() {
     filter_dch dch --newversion "$CREATED_VERSION" --distribution "$codename" \
         --force-distribution --force-bad-version "$title"
     regen_control
-    git add .drone.jsonnet debian/gbp.conf debian/changelog debian/control
+    git add debian/changelog debian/control
     git commit -q -m "$title"
 }
 
@@ -741,8 +836,8 @@ repo_pkg_version() {
 }
 
 # Check that every "ours" build-dep of <branch> is available at the required
-# version in the branch's own target repo (parsed from its .drone.jsonnet), for
-# EVERY architecture that branch's CI builds — not just amd64. A dep that exists
+# version in the branch's own target repo (from its CI config), for EVERY
+# architecture that branch's CI builds — not just amd64. A dep that exists
 # for amd64 but is missing for arm64/armhf/i386 still fails those builds, so the
 # pre-check must cover them. Prints problems to stderr; returns non-zero if any dep
 # is unsatisfied on any built arch.
@@ -750,14 +845,14 @@ dep_check() {
     local b="$1" ref
     ref="$(branch_ref "$b")"
     local control distro suffix
-    distro="$(drone_local "$ref" distro)"
-    [ -n "$distro" ] || { warn "[$(cpkg "$b")] no/unparseable .drone.jsonnet; skipping dep check"; return 0; }
-    suffix="$(drone_local "$ref" repo_suffix)"
+    distro="$(ci_setting "$ref" distro)"
+    [ -n "$distro" ] || { warn "[$(cpkg "$b")] no distro in the CI config; skipping dep check"; return 0; }
+    suffix="$(ci_setting "$ref" repo_suffix)"
     control="$(git show "$ref:debian/control" 2>/dev/null)" ||
         { warn "[$(cpkg "$b")] no debian/control; skipping"; return 0; }
 
     local -a arches
-    mapfile -t arches < <(drone_debarches "$ref")
+    mapfile -t arches < <(ci_debarches "$ref")
     [ "${#arches[@]}" -gt 0 ] || arches=(amd64)
 
     # Pull the (folded) Build-Depends field and flatten it to one line.
@@ -816,25 +911,6 @@ dep_check() {
 # ---------------------------------------------------------------------------
 # cross-repo helpers (used by deb-cascade / deb-add-distro-all)
 # ---------------------------------------------------------------------------
-# Read a `local <name> = '...'` string value from a ref's .drone.jsonnet.
-drone_local() {
-    git show "$1:.drone.jsonnet" 2>/dev/null |
-        sed -n "s/^local $2 = '\([^']*\)'.*/\1/p" | head -1
-}
-
-# The Debian architectures a ref's CI builds, from its .drone.jsonnet
-# deb_pipeline(...) invocations (each `debarch='...'`, defaulting to amd64). The
-# deb_pipeline definition line (`... ) = {`) is skipped. One arch per line, deduped.
-drone_debarches() {
-    git show "$1:.drone.jsonnet" 2>/dev/null | awk '
-        /deb_pipeline\(/ && $0 !~ /deb_pipeline\([^)]*\)[ \t]*=/ {
-            if (match($0, /debarch=.[a-z0-9]+/)) {
-                a = substr($0, RSTART, RLENGTH); sub(/debarch=./, "", a); print a
-            } else print "amd64"
-        }
-    ' | awk 'NF && !seen[$0]++'
-}
-
 # Binary package names produced by a ref (from its debian/control).
 repo_binaries() {
     git show "$1:debian/control" 2>/dev/null | sed -n 's/^Package:[[:space:]]*//p'
@@ -851,7 +927,7 @@ origin_slug() {
 published_in_repo() {
     local suffix="$1" branch="$2" ref distro ver pkg avail any=0
     ref="$(branch_ref "$branch")"
-    distro="$(drone_local "$ref" distro)"
+    distro="$(ci_setting "$ref" distro)"
     ver="$(changelog_version "$ref")"
     [ -n "$distro" ] && [ -n "$ver" ] || return 1
     while read -r pkg; do
