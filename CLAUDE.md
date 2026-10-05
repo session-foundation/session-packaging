@@ -118,6 +118,55 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
   is checked out here; "ours" is decided by the `is_our_package` heuristic
   (`*session*|*oxen*|*loki*|*sogs*`). Extend that pattern for new families.
 
+## Migrating a repo's packaging CI to `override-deb.star`
+
+General Drone → Woodpecker conversion (labels, `when`, secrets, `CI_*`
+variables, cloning, host renames) is documented in
+`~/src/session-woodpecker-config/README.md` ("Migrating from `.drone.jsonnet`");
+follow that. The deb-specific parts:
+
+* **Template:** copy `.woodpecker/override-deb.star` from an already-migrated
+  repo (libquic was the first) rather than converting the old `.drone.jsonnet`
+  line by line. Per branch, take the values from that branch's old
+  `.drone.jsonnet`: `distro`, the `Debian`/`Ubuntu` family in `distro_name` and
+  `builder_image`, `repo_suffix`, `arches` (one per `deb_pipeline(...)` call, from
+  its `debarch=`). Don't carry over a reduced `jobs=` (libquic's `ubuntu/jammy`
+  used `jobs=2` on arm64 for memory): give the platform the `mem8: yes` agent
+  label instead, via `agent_labels = {"arm64": {"mem8": "yes"}}`. That routes the
+  build to the 8GB Pi5 agents; without it, a build can land on a 4GB Pi4.
+* **Keep the tool-read settings parseable:** `distro`, `builder_image` (as
+  `"<prefix>" + distro + "<suffix>"`), `repo_suffix` and `arches` must stay
+  single-line top-level assignments in that form. `ci_setting`, `ci_debarches`,
+  `check_builder_image` and `create_distro_branch` (which rewrites `distro`
+  when forking a new distro) all depend on it.
+* **`debian/ci-upload.sh`** reads Drone's variables, which nothing sets any more:
+  `DRONE_BUILD_CREATED` → `CI_PIPELINE_CREATED`, `DRONE_COMMIT` →
+  `CI_COMMIT_SHA`, `DRONE_BRANCH` → `CI_COMMIT_BRANCH`, `DRONE_REPO` → `CI_REPO`.
+* **Upload is a separate step**, the only one with the `SSH_KEY` secret, so the
+  upstream build never sees the key. It works because gbp writes the debs to
+  `..` of the workspace, which is still inside the `/woodpecker` volume that
+  steps share. The step installs `openssh-client` itself because each step starts
+  from a fresh container. Workflows run on `push` and `manual` only, since the
+  secret isn't available to pull requests.
+* **Clone:** Woodpecker's default clone (shallow, with submodules) replaces the
+  old `submodules` step. gbp builds with `--git-upstream-tag=HEAD`, so no tags
+  are needed.
+* **`.drone.jsonnet` on the branch:** make it match upstream so merges stop
+  conflicting. If upstream deleted it, delete it; otherwise restore upstream's
+  copy (`git checkout <upstream-ref> -- .drone.jsonnet`). Either way the override
+  shadows it, because Woodpecker searches `.woodpecker/` first.
+* **Applying it across branches:** commit on `debian/sid`, then for each other
+  branch cherry-pick the previous branch's commit. Resolve the expected
+  `.drone.jsonnet` modify/delete conflict with `git rm`, and edit the distro
+  lines before `cherry-pick --continue`. Picking from the previous branch of the
+  same family keeps ubuntu branches starting from ubuntu values.
+* **Versioning:** no bump is needed when the current version was never built (as
+  with libquic, whose push had run upstream's CI instead). If the current
+  version is already published, push the migration only together with the next
+  version bump, because pushing it alone rebuilds a published version.
+* `ci_config_check` (run by `deb-push`) passing on every branch confirms that
+  Woodpecker will pick the override.
+
 ## Testing
 
 The pure helpers and the dep-check are unit-testable (source `lib.bash` without
