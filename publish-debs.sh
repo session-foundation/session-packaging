@@ -89,7 +89,7 @@ for p; do
 done
 if [ "${#projects[@]}" -eq 0 ]; then
     projects=(oxen-io/oxen-core
-        session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession-util,libsession-python,session-router,session-storage-server,pyoxenc}
+        session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession,libsession-python,session-router,session-storage-server,pyoxenc}
         oxen-io/{lokinet,session-pysogs,better_profanity}
         jagerman/{libonionrequests,ethyl}
     )
