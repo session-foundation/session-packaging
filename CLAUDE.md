@@ -35,6 +35,11 @@ contains that packaging; it orchestrates it.
   `woodpecker-cli`), and pauses for the manual
   `/staging` publish between steps; it's reentrant (skips repos already in
   `/staging`).
+* `deb-rebuild-broken` — the same cascade for a distro library transition: per
+  `build-order` line it uses dose3 (`dose-debcheck`/`dose-builddebcheck`) to find
+  which repos' newest `/staging` packages can't be installed from the distro
+  archive plus `/staging`, `deb-rebuild --only`s those (`+M`) and pushes them. The
+  push/watch/publish-wait steps are shared with `deb-cascade` in lib.bash.
 * `build-order` — hand-maintained cross-repo dependency ordering (one line per
   parallelizable build step). Derived from `is_our_package` build-deps.
 * `publish-debs.sh` — the manual reprepro publish step, run on the repo host (not
@@ -54,7 +59,10 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
 
 * **Only `deb-push` pushes.** Every other tool commits locally and stops so the
   user can inspect. Pushing triggers CI builds; publishing to reprepro is a
-  separate *manual* step (signing key). Never push or publish automatically.
+  separate *manual* step (signing key). Never push or publish automatically. The
+  cascade tools push only by running `deb-push`: `deb-cascade` pushes what's
+  already committed, and `deb-rebuild-broken` pushes its own commits without
+  stopping, which is acceptable only because they are changelog-only rebuild bumps.
 * **Don't commit the checkouts.** They're ignored via `/*/` in `.gitignore`.
 * **Changelog distribution field** = the branch codename, **except `debian/sid`
   = `unstable`** (`changelog_dist` in lib.bash).
@@ -121,6 +129,18 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
   Anything else is assumed to come from the distro archive and isn't checked.
   The catch: a backport the distro could satisfy on its own still fails the check
   if our repo has an older one.
+* **The installability check** (`deb-rebuild-broken`) looks only at the binaries of
+  each source's *newest* version in `/staging`: reprepro keeps old-soname packages
+  (`libsession-util1.6.7` next to `1.9.4`) that nothing installs any more, and those
+  stay broken forever. Binaries are matched to a repo by `Source:`, which often
+  isn't the checkout name (libquic's is `oxen-libquic`). `distro_archive_urls`
+  mirrors the builder images' apt sources and must be kept in step with them.
+  dose3 wants the packages to check as a separate `--fg` file (its `--checkonly`
+  only matches arch-qualified names), and `dose_run` parses its YAML report by
+  indentation.
+* **Packages indices are cached** under `~/.cache/session-packaging/indices`
+  (`cached_index`, conditional re-download). Read them with `zcat -f`: they're
+  usually gzipped.
 
 ## Migrating a repo's packaging CI to `override-deb.star`
 

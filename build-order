@@ -1,4 +1,5 @@
-# Cross-repo build order for cascaded rebuilds (used by deb-cascade).
+# Cross-repo build order for cascaded rebuilds (used by deb-cascade,
+# deb-rebuild-broken and deb-add-distro-all).
 #
 # One non-comment line per build step. Repos on the same line have no build
 # dependency on each other and can be built in parallel. Each line depends only

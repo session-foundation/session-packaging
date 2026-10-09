@@ -929,7 +929,156 @@ dep_check() {
 }
 
 # ---------------------------------------------------------------------------
-# cross-repo helpers (used by deb-cascade / deb-add-distro-all)
+# installability against the distro archive (dose3; used by deb-rebuild-broken)
+# ---------------------------------------------------------------------------
+require_dose() {
+    command -v dose-debcheck >/dev/null 2>&1 && command -v dose-builddebcheck >/dev/null 2>&1 ||
+        die "dose3 is required: apt install dose-distcheck dose-builddebcheck"
+}
+
+# The distro archive Packages index URLs (without compression extension) that
+# <branch>'s builder image installs from on <arch>, one per line. They mirror the
+# builder images' apt sources: Debian main from the release, -updates and -security
+# (sid only has the release), and Ubuntu main/universe/restricted/multiverse from the
+# release, -updates, -backports and -security (non-x86 arches live on
+# ports.ubuntu.com). A pocket a release doesn't have is just absent when fetched.
+distro_archive_urls() {
+    local b="$1" arch="$2" c="${1#*/}" mirror s comp
+    case "$b" in
+        debian/sid)
+            printf '%s\n' "https://deb.debian.org/debian/dists/sid/main/binary-$arch/Packages" ;;
+        debian/*)
+            printf '%s\n' \
+                "https://deb.debian.org/debian/dists/$c/main/binary-$arch/Packages" \
+                "https://deb.debian.org/debian/dists/$c-updates/main/binary-$arch/Packages" \
+                "https://deb.debian.org/debian-security/dists/$c-security/main/binary-$arch/Packages" ;;
+        ubuntu/*)
+            case "$arch" in
+                amd64|i386) mirror="http://archive.ubuntu.com/ubuntu" ;;
+                *)          mirror="http://ports.ubuntu.com/ubuntu-ports" ;;
+            esac
+            for s in "$c" "$c-updates" "$c-backports" "$c-security"; do
+                for comp in main universe restricted multiverse; do
+                    printf '%s\n' "$mirror/dists/$s/$comp/binary-$arch/Packages"
+                done
+            done ;;
+        *) die "no distro archive known for '$b'" ;;
+    esac
+}
+
+# Fetch <branch>'s distro archive indices for <arch> (see distro_archive_urls) and
+# set DISTRO_INDICES to their cached paths. Each branch/arch is fetched once per run:
+# call this directly, not in a subshell, or that memo is lost.
+DISTRO_INDICES=()
+declare -gA _distro_indices=()
+distro_indices() {
+    local key="$1|$2" u p list=""
+    if [ -z "${_distro_indices[$key]+set}" ]; then
+        msg "${C_DIM}fetching the $1 $2 archive indices...$C_RESET"
+        while read -r u; do
+            p="$(cached_index "$u")"
+            [ -z "$p" ] || list+="$p"$'\n'
+        done < <(distro_archive_urls "$1" "$2")
+        [ -n "$list" ] || die "no $1 archive indices found for $2"
+        _distro_indices[$key]="$list"
+    fi
+    mapfile -t DISTRO_INDICES < <(printf '%s' "${_distro_indices[$key]}")
+}
+
+# Source package name in <ref>'s debian/control (often not the checkout's name:
+# libquic's is oxen-libquic).
+control_source() {
+    git show "$1:debian/control" 2>/dev/null | sed -n 's/^Source:[[:space:]]*//p' | head -1
+}
+
+# The binaries of source <src> in Packages index <file>, leaving out debug symbols:
+# with <ver>, the stanzas of that version's binaries (blank-line separated); without,
+# each distinct version present. A binary's source is its Source: field (minus any
+# "(version)"), or its own name when it has none.
+_index_source() {
+    zcat -f "$1" | awk -v s="$2" -v v="${3:-}" '
+        BEGIN { RS = ""; FS = "\n" }
+        {
+            pkg = src = ver = sec = ""
+            for (i = 1; i <= NF; i++) {
+                if      ($i ~ /^Package:/) { pkg = $i; sub(/^Package:[ \t]*/, "", pkg) }
+                else if ($i ~ /^Source:/)  { src = $i; sub(/^Source:[ \t]*/, "", src); sub(/[ \t].*/, "", src) }
+                else if ($i ~ /^Version:/) { ver = $i; sub(/^Version:[ \t]*/, "", ver) }
+                else if ($i ~ /^Section:/) { sec = $i; sub(/^Section:[ \t]*/, "", sec) }
+            }
+            if (src == "") src = pkg
+            if (src != s || sec == "debug" || pkg ~ /-dbgsym$/) next
+            if (v == "") { if (!seen[ver]++) print ver }
+            else if (ver == v) printf "%s\n\n", $0
+        }'
+}
+index_source_versions() { _index_source "$1" "$2"; }
+index_source_stanzas()  { _index_source "$1" "$2" "$3"; }
+
+# The highest of the Debian versions on stdin (one per line), or nothing.
+newest_version() {
+    local v best=""
+    while read -r v; do
+        [ -n "$v" ] || continue
+        if [ -z "$best" ] || dpkg --compare-versions "$v" gt "$best"; then best="$v"; fi
+    done
+    [ -z "$best" ] || printf '%s\n' "$best"
+}
+
+# A Sources-format stanza for <ref>'s source package at its changelog version, with
+# its build relationships, for dose-builddebcheck. Each field is flattened onto one
+# line: dose3's parser rejects a field whose first line is empty, which is how our
+# control files write Build-Depends.
+source_stanza() {
+    git show "$1:debian/control" | awk -v ver="$(changelog_version "$1")" '
+        function flush() {
+            if (f != "") {
+                gsub(/[ \t]+/, " ", val); sub(/^[ ,]+/, "", val); sub(/[ ,]+$/, "", val)
+                print f ": " val
+            }
+            f = ""
+        }
+        /^#/       { next }
+        /^[ \t]*$/ { if (started) exit; next }
+        /^[ \t]/   { if (f != "") val = val " " $0; next }
+                   { flush(); started = 1 }
+        /^Source:/ {
+            s = $0; sub(/^Source:[ \t]*/, "", s)
+            print "Package: " s; print "Version: " ver; print "Architecture: any"
+        }
+        /^Build-(Depends|Conflicts)(-Arch|-Indep)?:/ {
+            f = $0; sub(/:.*/, "", f); val = $0; sub(/^[^:]*:/, "", val)
+        }
+        END { flush(); print "" }'
+}
+
+# Run a dose3 checker (dose-debcheck or dose-builddebcheck, given --failures
+# --explain) and print "<package>\t<reason>" for each reason a package is broken,
+# where a reason is "<pkg> needs <dep>" or "<pkg> conflicts with <pkg2>" and <pkg>
+# is the package in the dependency chain that has the problem. Dies on anything but
+# dose's 0 (all fine) or 1 (some broken) exit.
+dose_run() {
+    local out err rc=0
+    err="$(mktemp)"
+    out="$("$@" 2>"$err")" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        cat "$err" >&2; rm -f "$err"
+        die "$1 failed (exit $rc)"
+    fi
+    rm -f "$err"
+    # The report's indentation is fixed: a checked package at 2 spaces, the package
+    # a reason is about at 6, and the dependency chains leading to it deeper.
+    printf '%s\n' "$out" | awk '
+        function clean(s) { gsub(/"/, "", s); gsub(/:[a-z][a-z0-9-]*/, "", s); return s }
+        /^  package: /              { pkg = $2 }
+        /^     pkg[12]?:/           { rp = "" }
+        /^      package: /          { if (rp == "") rp = $2 }
+        /^      unsat-dependency: / { sub(/^      unsat-dependency: /, ""); print pkg "\t" rp " needs " clean($0) }
+        /^      unsat-conflict: /   { sub(/^      unsat-conflict: /, "");   print pkg "\t" rp " conflicts with " clean($0) }'
+}
+
+# ---------------------------------------------------------------------------
+# cross-repo helpers (used by deb-cascade / deb-add-distro-all / deb-rebuild-broken)
 # ---------------------------------------------------------------------------
 # Binary package names produced by a ref (from its debian/control).
 repo_binaries() {
@@ -1213,6 +1362,9 @@ monitor_ci() {
 # success footer
 # ---------------------------------------------------------------------------
 push_hint() {
+    # A tool running this one as a step of its own (deb-rebuild-broken) pushes
+    # straight afterwards, so the hint would be wrong there.
+    [ -z "${SP_NO_PUSH_HINT:-}" ] || return 0
     # Only a genuinely restricted run (--only, PARTIAL=1) names its branches; a full
     # run — even one that set TARGET just to reorder/filter (version-bump creating a
     # distro, pkg-update --no-bump) — points at the bare "all branches" form, since

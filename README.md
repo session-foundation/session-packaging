@@ -185,9 +185,9 @@ the regular build set.
 To build a whole set of packages — e.g. add a new distro like `ubuntu/resolute`
 everywhere — order matters: a package can't build until the Session-family
 packages it build-depends on have been built by CI **and** uploaded to
-`/staging`. Two tools handle this, driven by the `build-order` file (one line per
-build step; repos on a line have no interdependency and build in parallel; each
-line must be published to `/staging` before the next):
+`/staging`. These tools handle that, driven by the `build-order` file (one line
+per build step; repos on a line have no interdependency and build in parallel;
+each line must be published to `/staging` before the next):
 
 ### `./deb-add-distro-all <branch> [<repo>...]`
 Create the branch in every repo in `build-order` (order-independent; skips repos
@@ -207,6 +207,33 @@ So, to add resolute everywhere:
 ```sh
 ./deb-add-distro-all ubuntu/resolute     # create + review branches locally
 ./deb-cascade        ubuntu/resolute     # push in order, monitor CI, pause for /staging
+```
+
+### `./deb-rebuild-broken <branch> [<repo>...] [--skip <repo>] [-m "<msg>"] [--check]`
+For when a distro library transition (say sid dropping `libspdlog1.15-fmt10`)
+leaves some of our published packages uninstallable. It goes through
+`build-order` like `deb-cascade`, but first checks each line with dose3: can each
+repo's newest `/staging` packages be installed from the distro archive plus
+`/staging`, on every arch the branch builds? Only the broken repos get a
+`deb-rebuild --only <branch>` (`+M`) bump. They are then pushed, their CI is
+watched, and the tool waits for the `/staging` publish before checking the next
+line. So a repo broken only through a dependency isn't rebuilt if that
+dependency's rebuild already fixed it.
+
+It leaves a broken repo alone when its build-deps can't be installed either,
+because a rebuild would only fail in CI; it says why. A branch that already
+carries a version newer than `/staging`'s (an unpublished bump, or one whose CI
+failed) is pushed as is, without another bump, so re-running after a failure
+carries on. `--check` only reports, against `/staging` as it is now. `-m` sets the
+changelog message (default "Rebuild against current `<codename>` libraries").
+
+Requires `apt install dose-distcheck dose-builddebcheck`, and `woodpecker-cli`
+as for `deb-cascade`. The distro archive indices are cached under
+`~/.cache/session-packaging`.
+
+```sh
+./deb-rebuild-broken sid --check     # what can't be installed, and why
+./deb-rebuild-broken sid             # rebuild those in order, monitor CI, pause for /staging
 ```
 
 ## Publishing
@@ -260,7 +287,7 @@ Sourced by all tools. Defines:
 
 ## `build-order`
 
-The cross-repo dependency ordering used by `deb-cascade` (see above). Hand-
+The cross-repo dependency ordering used by the cascade tools (see above). Hand-
 maintained; the header comment records the build-dep graph it was derived from.
 Keep every repo on a line strictly later than all of its dependencies.
 
