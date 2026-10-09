@@ -795,44 +795,60 @@ repo_dist_exists() {
     curl -fsI "$base/InRelease" >/dev/null 2>&1 || curl -fsI "$base/Release" >/dev/null 2>&1
 }
 
-# Download + decompress the <suffix>/<distro>/<arch> Packages index to a temp file
-# and print its path (caller removes it); prints nothing if the index isn't
-# published. <suffix> is the reprepro repo suffix ('', '/beta', '/staging').
-fetch_packages() {
-    local suffix="$1" distro="$2" arch="$3"
-    local base="https://$DEB_REPO_HOST$suffix/dists/$distro/main/binary-$arch"
-    local dl tmp ext name got=1
-    dl="$(mktemp)"; tmp="$(mktemp)"
-    for ext in xz gz ''; do
-        name="Packages"; [ -n "$ext" ] && name="Packages.$ext"
-        if curl -fsSL -o "$dl" "$base/$name" 2>/dev/null; then
-            case "$ext" in
-                xz) xz   -dc "$dl" > "$tmp" 2>/dev/null && got=0 ;;
-                gz) gzip -dc "$dl" > "$tmp" 2>/dev/null && got=0 ;;
-                '') cp        "$dl"  "$tmp"              && got=0 ;;
-            esac
-            [ "$got" = 0 ] && break
+# On-disk cache of apt Packages indices. Not under /tmp: a distro's archive indices
+# run to hundreds of MB.
+INDEX_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/session-packaging/indices"
+
+# Fetch the Packages index at <url> (without a compression extension) into
+# INDEX_CACHE and print the cached file's path: the .gz when the server has one
+# (dose3 reads it directly; read it with `zcat -f`), else the uncompressed index.
+# Downloads only when the server's copy is newer than the cached one, so repeated
+# checks of a repo that changes mid-run (/staging during a cascade) stay cheap.
+# Prints nothing if there's no index at <url>.
+cached_index() {
+    local url="$1" base ext dst tmp code
+    base="$INDEX_CACHE/$(printf '%s' "${url#*://}" | tr '/' '_')"
+    mkdir -p "$INDEX_CACHE"
+    for ext in .gz ''; do
+        dst="$base$ext"
+        # Download beside the cached copy and rename into place, so a concurrent
+        # reader never sees a partial file.
+        tmp="$(mktemp "$base.XXXXXX")"
+        if [ -e "$dst" ]; then
+            code="$(curl -sSL -R -z "$dst" -o "$tmp" -w '%{http_code}' "$url$ext" 2>/dev/null)" || code=000
+        else
+            code="$(curl -sSL -R -o "$tmp" -w '%{http_code}' "$url$ext" 2>/dev/null)" || code=000
         fi
+        case "$code" in
+            200) mv "$tmp" "$dst"; printf '%s\n' "$dst"; return 0 ;;
+            304) rm -f "$tmp";     printf '%s\n' "$dst"; return 0 ;;
+        esac
+        rm -f "$tmp"
     done
-    rm -f "$dl"
-    if [ "$got" != 0 ]; then rm -f "$tmp"; return 0; fi
-    printf '%s\n' "$tmp"
 }
 
-# Version of <pkg> in a decompressed Packages <file>, or empty.
+# Path of the cached <suffix>/<distro>/<arch> Packages index of our repo (see
+# cached_index), or nothing if it isn't published. <suffix> is the reprepro repo
+# suffix ('', '/beta', '/staging').
+repo_index() {
+    cached_index "https://$DEB_REPO_HOST$1/dists/$2/main/binary-$3/Packages"
+}
+
+# Version of <pkg> in Packages index <file> (plain or gzipped), or empty.
 pkg_version_in() {
-    awk -v p="$2" '
+    # Reads to the end rather than exiting at the first match: an early exit would
+    # kill zcat with SIGPIPE, which pipefail turns into a failure.
+    zcat -f "$1" | awk -v p="$2" '
         $1=="Package:" { cur=$2 }
-        $1=="Version:" && cur==p { print $2; exit }
-    ' "$1"
+        $1=="Version:" && cur==p && !found { print $2; found=1 }
+    '
 }
 
 # Version of <pkg> published for <suffix>/<distro>/<arch>, or empty.
 repo_pkg_version() {
-    local f; f="$(fetch_packages "$1" "$2" "$3")"
+    local f; f="$(repo_index "$1" "$2" "$3")"
     [ -n "$f" ] || return 0
     pkg_version_in "$f" "$4"
-    rm -f "$f"
 }
 
 # Check that every versioned build-dep of <branch> that comes from our repo — one
@@ -880,7 +896,7 @@ dep_check() {
         miss=(); old_vers=(); old_arches=()
         for arch in "${arches[@]}"; do
             if [ -z "${pkgidx_set[$arch]:-}" ]; then
-                pkgidx[$arch]="$(fetch_packages "$suffix" "$distro" "$arch")"
+                pkgidx[$arch]="$(repo_index "$suffix" "$distro" "$arch")"
                 pkgidx_set[$arch]=1
             fi
             if [ -z "${pkgidx[$arch]}" ]; then miss+=("$arch"); continue; fi  # no index for arch
@@ -909,7 +925,6 @@ dep_check() {
             rc=1
         fi
     done
-    for arch in "${!pkgidx[@]}"; do [ -n "${pkgidx[$arch]}" ] && rm -f "${pkgidx[$arch]}"; done
     return "$rc"
 }
 
