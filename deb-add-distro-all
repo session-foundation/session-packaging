@@ -23,11 +23,11 @@ case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ o
 
 want() { [ "${#only[@]}" -eq 0 ] && return 0; in_list "$1" "${only[*]}"; }
 
+read_build_order
 repos=()
-while IFS= read -r line; do
-    line="${line%%#*}"
+for line in "${BUILD_STEPS[@]}"; do
     for r in $line; do repos+=("$r"); done
-done < "$SP_ROOT/build-order"
+done
 
 created=() skipped=() missing=() nobase=() failed=()
 for r in "${repos[@]}"; do

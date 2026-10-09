@@ -26,8 +26,6 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
 
 STAGING="/staging"
-POLL="${DEB_CASCADE_POLL:-4}"                # seconds between CI status polls
-POLL_STAGE="${DEB_CASCADE_STAGE_POLL:-15}"   # /staging fallback re-check interval
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
@@ -45,34 +43,17 @@ done
 case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
 
 require_ci
-
-# The staging distribution must already exist (reprepro won't be populated for a
-# brand-new distro until it's exported once, even empty) — otherwise CI builds
-# that pull from it fail their apt-get update. Fail fast rather than mid-cascade.
-dist="${branch#*/}"
-repo_dist_exists "$STAGING" "$dist" || die \
-"the $STAGING repo for '$dist' doesn't exist yet:
-    https://$DEB_REPO_HOST$STAGING/dists/$dist/
-Export that distribution in reprepro first (an empty one is fine), then re-run."
+require_repo_dist "$STAGING" "$branch"
 
 want() {
     in_list "$1" "${skip[*]:-}" && return 1
     [ "${#only[@]}" -eq 0 ] && return 0
     in_list "$1" "${only[*]}"
 }
-in_repo() { ( cd "$SP_ROOT/$1"; shift; "$@" ); }
 
-# Read build-order into an array of lines (comments/blanks stripped).
-steps=()
-while IFS= read -r line; do
-    line="${line%%#*}"
-    line="$(printf '%s' "$line" | xargs || true)"
-    [ -n "$line" ] && steps+=("$line")
-done < "$SP_ROOT/build-order"
-[ "${#steps[@]}" -gt 0 ] || die "no steps found in $SP_ROOT/build-order"
-
+read_build_order
 stepno=0
-for line in "${steps[@]}"; do
+for line in "${BUILD_STEPS[@]}"; do
     stepno=$((stepno + 1))
     read -ra all <<< "$line"
     repos=()
@@ -105,60 +86,15 @@ for line in "${steps[@]}"; do
     done
     [ "${#todo[@]}" -gt 0 ] || { msg "step $stepno already complete"; continue; }
 
-    # 2) push (deb-push's dep pre-check enforces that earlier steps are staged).
-    # Record whether each push was a no-op (branch already on the remote at this
-    # commit): that distinguishes a stale failed build from a fresh failure.
-    # --no-wait: step 3 watches the whole line in parallel, and deb-push's own
-    # watch would die on a stale failure before step 3 could restart it.
-    declare -A sha=() noop=()
-    for r in "${todo[@]}"; do
-        sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
-        rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
-        [ "$rem" = "${sha[$r]}" ] && noop[$r]=1 || noop[$r]=0
-        msg "[$(cpkg "$r")] pushing $branch ..."
-        "$SP_ROOT/deb-push" "$r" --no-wait "$branch"
-    done
-
-    # 3) watch every build to completion (shared monitor_ci: dim while locating,
-    # per-stage tags while building, terminal tag + build link when done). A no-op
-    # push (branch already on the remote at this commit) lets a stale terminal build
-    # be auto-restarted once; a fresh push never restarts.
-    MON_ITEMS=()
-    for r in "${todo[@]}"; do
-        MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${noop[$r]}")
-    done
-    MON_POLL="$POLL"
-    monitor_ci
+    # 2) push and watch (deb-push's dep pre-check enforces that earlier steps are staged).
+    push_and_watch "$branch" "${todo[@]}"
     [ "${#MON_FAILED[@]}" -eq 0 ] ||
         die "CI failed for: $(cpkg "${MON_FAILED[*]}") — fix and re-run (finished steps are skipped)"
 
-    # 5) staging barrier: manual publish, then re-check (in place) until present.
+    # 3) staging barrier: manual publish, then re-check (in place) until present.
     msg ""
     msg "${C_OK}CI passed${C_RESET} for step $stepno: ${todo[*]}"
-    msg "Upload these to the $STAGING repo now (manual signing step)."
-    msg "On the main reprepro server run: ${C_BOLD}DEBS_TO_REPO_SUFFIX=$STAGING DISTRO=$branch ./publish-debs.sh${C_RESET}"
-    while :; do
-        pend=()
-        for r in "${todo[@]}"; do
-            in_repo "$r" published_in_repo "$STAGING" "$branch" || pend+=("$r")
-        done
-        if [ "${#pend[@]}" -eq 0 ]; then
-            [ -t 0 ] && printf '\n' >&2
-            msg "${C_OK}All of step $stepno are in $STAGING.${C_RESET}"
-            break
-        fi
-        if [ -t 0 ]; then
-            printf '\r\033[K  waiting for %s in %s  [Enter = recheck, "skip" = force] ' \
-                "${pend[*]}" "$STAGING" >&2
-            ans=""
-            read -t "$POLL_STAGE" -r ans || true
-            [ "$ans" = skip ] && { printf '\n' >&2; warn "forced past staging for: ${pend[*]}"; break; }
-        else
-            sleep "$POLL_STAGE"
-        fi
-    done
-
-    unset sha noop
+    wait_published "$STAGING" "$branch" "step $stepno" "${todo[@]}"
 done
 
 msg ""

@@ -959,6 +959,93 @@ published_in_repo() {
     [ "$any" = 1 ]      # unknown (no binaries parsed) counts as not-published
 }
 
+# Run a command inside checkout <repo> (in a subshell, so the caller's cwd is kept).
+in_repo() { ( cd "$SP_ROOT/$1"; shift; "$@" ); }
+
+# The build-order file's steps, one entry per line with comments and blanks
+# stripped, in BUILD_STEPS. Repos within an entry are space-separated.
+BUILD_STEPS=()
+read_build_order() {
+    local line
+    BUILD_STEPS=()
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | xargs || true)"
+        [ -n "$line" ] && BUILD_STEPS+=("$line")
+    done < "$SP_ROOT/build-order"
+    [ "${#BUILD_STEPS[@]}" -gt 0 ] || die "no steps found in $SP_ROOT/build-order"
+}
+
+# Die unless <suffix>'s reprepro distribution for <branch> exists. reprepro doesn't
+# create one until it's exported once (even empty), and CI builds that pull from a
+# missing one fail at apt-get update, so a cascade should fail before it starts.
+require_repo_dist() {
+    local suffix="$1" dist="${2#*/}"
+    repo_dist_exists "$suffix" "$dist" || die \
+"the $suffix repo for '$dist' doesn't exist yet:
+    https://$DEB_REPO_HOST$suffix/dists/$dist/
+Export that distribution in reprepro first (an empty one is fine), then re-run."
+}
+
+# Push <branch> in each <repo> (deb-push --no-wait, so its pre-checks run) and watch
+# all the CI builds to completion with monitor_ci, which sets MON_FAILED. A repo
+# whose branch was already on the remote at this commit lets monitor_ci restart a
+# stale failed build once, which is what makes re-running a cascade after a failure
+# work; a fresh push never restarts. Polls every DEB_CASCADE_POLL seconds (default 4).
+push_and_watch() {
+    local branch="$1" r rem; shift
+    local -A sha=() noop=()
+    for r; do
+        sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
+        rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
+        [ "$rem" = "${sha[$r]}" ] && noop[$r]=1 || noop[$r]=0
+        msg "[$(cpkg "$r")] pushing $branch ..."
+        # --no-wait: everything is watched together below, and deb-push's own watch
+        # would die on a stale failure before monitor_ci could restart it.
+        "$SP_ROOT/deb-push" "$r" --no-wait "$branch"
+    done
+    MON_ITEMS=()
+    for r; do
+        MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${noop[$r]}")
+    done
+    MON_POLL="${DEB_CASCADE_POLL:-4}"
+    monitor_ci
+}
+
+# The barrier between cascade steps: tell the user to upload <branch>'s packages
+# from each <repo> to <suffix> (the manual signing step), then re-check until they
+# are all published there. <what> names the set in the messages (e.g. "step 2").
+# Re-checks every DEB_CASCADE_STAGE_POLL seconds (default 15); on a terminal, Enter
+# re-checks at once and "skip" carries on without the stragglers.
+wait_published() {
+    local suffix="$1" branch="$2" what="$3" r ans
+    local poll="${DEB_CASCADE_STAGE_POLL:-15}"
+    local -a pend
+    shift 3
+    msg "Upload these to the $suffix repo now (manual signing step)."
+    msg "On the main reprepro server run: ${C_BOLD}DEBS_TO_REPO_SUFFIX=$suffix DISTRO=$branch ./publish-debs.sh${C_RESET}"
+    while :; do
+        pend=()
+        for r; do
+            in_repo "$r" published_in_repo "$suffix" "$branch" || pend+=("$r")
+        done
+        if [ "${#pend[@]}" -eq 0 ]; then
+            [ -t 0 ] && printf '\n' >&2
+            msg "${C_OK}All of $what are in $suffix.${C_RESET}"
+            return 0
+        fi
+        if [ -t 0 ]; then
+            printf '\r\033[K  waiting for %s in %s  [Enter = recheck, "skip" = force] ' \
+                "${pend[*]}" "$suffix" >&2
+            ans=""
+            read -t "$poll" -r ans || true
+            [ "$ans" = skip ] && { printf '\n' >&2; warn "forced past $suffix for: ${pend[*]}"; return 0; }
+        else
+            sleep "$poll"
+        fi
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Woodpecker CI (via woodpecker-cli, using its configured context or
 # WOODPECKER_SERVER/WOODPECKER_TOKEN)
