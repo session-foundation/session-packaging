@@ -82,31 +82,44 @@ want() {
 #   R_VER    its newest version in $STAGING
 #   R_PKGS   its uninstallable binaries
 #   R_WHY    "<arch>\t<reason>" lines for those; R_BLOCK the same for the build-deps
-# dose runs once per arch for all the repos together, because loading the distro
-# archive is most of each run's time.
+# Every arch's dose-debcheck and dose-builddebcheck run at once, each for all the
+# repos together: loading the distro archive is most of each run's time. The
+# build-deps are checked for every repo, before knowing which are broken, so that
+# they don't have to wait for the installability results; only the broken ones'
+# results are used.
 declare -A R_STATE=() R_VER=() R_PKGS=() R_WHY=() R_BLOCK=()
 check_repos() {
-    local r ref arch v f pkg reason out fg srcs
-    local -a all_arches bg
-    local -A src_of=() arches_of=() stg=() owner=() src_owner=()
+    local r ref arch v f k pkg reason out work fg srcs
+    local -a all_arches stg_urls stg_paths bg
+    local -A src_of=() arches_of=() src_stanza=() stg=() owner=() src_owner=() job=()
     R_STATE=() R_VER=() R_PKGS=() R_WHY=() R_BLOCK=()
     for r; do
         cd "$SP_ROOT/$r"
         ref="$(branch_ref "$branch")"
         src_of[$r]="$(control_source "$ref")"
         [ -n "${src_of[$r]}" ] || die "[$r] $branch's debian/control has no Source: field"
+        src_owner[${src_of[$r]}]="$r"
+        src_stanza[$r]="$(source_stanza "$ref")"
         arches_of[$r]="$(ci_debarches "$ref" | xargs)"
         [ -n "${arches_of[$r]}" ] || arches_of[$r]=amd64
     done
     cd "$SP_ROOT"
     mapfile -t all_arches < <(printf '%s\n' "${arches_of[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++')
 
+    fetch_distro_indices "$branch" "${all_arches[@]}"
+    stg_urls=()
+    for arch in "${all_arches[@]}"; do stg_urls+=("$(repo_index_url "$STAGING" "$dist" "$arch")"); done
+    mapfile -t stg_paths < <(cached_indices "${stg_urls[@]}")
+    for k in "${!all_arches[@]}"; do stg[${all_arches[k]}]="${stg_paths[k]:-}"; done
+
+    work="$(mktemp -d)"
     for arch in "${all_arches[@]}"; do
-        stg[$arch]="$(repo_index "$STAGING" "$dist" "$arch")"
         [ -n "${stg[$arch]}" ] || continue
-        fg="$(mktemp)"
+        fg="$work/$arch.fg" srcs="$work/$arch.src"
+        : > "$fg"; : > "$srcs"
         for r; do
             in_list "$arch" "${arches_of[$r]}" || continue
+            printf '%s\n\n' "${src_stanza[$r]}" >> "$srcs"
             v="$(index_source_versions "${stg[$arch]}" "${src_of[$r]}" | newest_version)"
             [ -n "$v" ] || continue
             if [ -z "${R_VER[$r]:-}" ] || dpkg --compare-versions "$v" gt "${R_VER[$r]}"; then
@@ -118,20 +131,33 @@ check_repos() {
                 owner[$pkg]="$r"
             done < <(printf '%s\n' "$out" | sed -n 's/^Package:[[:space:]]*//p')
         done
+        distro_indices "$branch" "$arch"
         if [ -s "$fg" ]; then
-            distro_indices "$branch" "$arch"
             bg=(--bg "${stg[$arch]}")
             for f in "${DISTRO_INDICES[@]}"; do bg+=(--bg "$f"); done
-            out="$(dose_run dose-debcheck --deb-native-arch="$arch" --failures --explain --fg "$fg" "${bg[@]}")"
-            while IFS=$'\t' read -r pkg reason; do
-                [ -n "$pkg" ] || continue
-                r="${owner[$pkg]:-}"
-                [ -n "$r" ] || continue
-                in_list "$pkg" "${R_PKGS[$r]:-}" || R_PKGS[$r]+="${R_PKGS[$r]:+ }$pkg"
-                R_WHY[$r]+="$arch"$'\t'"$reason"$'\n'
-            done <<< "$out"
+            dose_run dose-debcheck --deb-native-arch="$arch" --failures --explain --fg "$fg" "${bg[@]}" \
+                > "$work/$arch.debcheck" &
+            job[$arch.debcheck]=$!
         fi
-        rm -f "$fg"
+        if [ -s "$srcs" ]; then
+            dose_run dose-builddebcheck --deb-native-arch="$arch" --failures --explain \
+                "${stg[$arch]}" "${DISTRO_INDICES[@]}" "$srcs" > "$work/$arch.builddebcheck" &
+            job[$arch.builddebcheck]=$!
+        fi
+    done
+    for k in "${!job[@]}"; do
+        wait "${job[$k]}" || { rm -rf "$work"; die "dose3 check ($k) failed"; }
+    done
+
+    for arch in "${all_arches[@]}"; do
+        [ -e "$work/$arch.debcheck" ] || continue
+        while IFS=$'\t' read -r pkg reason; do
+            [ -n "$pkg" ] || continue
+            r="${owner[$pkg]:-}"
+            [ -n "$r" ] || continue
+            in_list "$pkg" "${R_PKGS[$r]:-}" || R_PKGS[$r]+="${R_PKGS[$r]:+ }$pkg"
+            R_WHY[$r]+="$arch"$'\t'"$reason"$'\n'
+        done < "$work/$arch.debcheck"
     done
 
     for r; do
@@ -142,28 +168,17 @@ check_repos() {
     done
 
     for arch in "${all_arches[@]}"; do
-        [ -n "${stg[$arch]}" ] || continue
-        srcs="$(mktemp)"
-        src_owner=()
-        for r; do
-            [ -n "${R_WHY[$r]:-}" ] && in_list "$arch" "${arches_of[$r]}" || continue
-            (cd "$SP_ROOT/$r" && source_stanza "$(branch_ref "$branch")") >> "$srcs"
-            src_owner[${src_of[$r]}]="$r"
-        done
-        if [ -s "$srcs" ]; then
-            distro_indices "$branch" "$arch"
-            out="$(dose_run dose-builddebcheck --deb-native-arch="$arch" --failures --explain \
-                "${stg[$arch]}" "${DISTRO_INDICES[@]}" "$srcs")"
-            while IFS=$'\t' read -r pkg reason; do
-                [ -n "$pkg" ] || continue
-                r="${src_owner[$pkg]:-}"
-                [ -n "$r" ] || continue
-                R_STATE[$r]=blocked
-                R_BLOCK[$r]+="$arch"$'\t'"$reason"$'\n'
-            done <<< "$out"
-        fi
-        rm -f "$srcs"
+        [ -e "$work/$arch.builddebcheck" ] || continue
+        while IFS=$'\t' read -r pkg reason; do
+            [ -n "$pkg" ] || continue
+            r="${src_owner[$pkg]:-}"
+            [ -n "$r" ] || continue
+            case "${R_STATE[$r]}" in broken|blocked) ;; *) continue ;; esac
+            R_STATE[$r]=blocked
+            R_BLOCK[$r]+="$arch"$'\t'"$reason"$'\n'
+        done < "$work/$arch.builddebcheck"
     done
+    rm -rf "$work"
 }
 
 # Print the "<arch>\t<reason>" lines on stdin once per reason, with its arches.
