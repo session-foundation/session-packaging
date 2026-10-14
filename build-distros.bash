@@ -30,5 +30,8 @@ distros=(debian/{sid,forky,trixie,bookworm} ubuntu/{stonking,resolute,noble,jamm
 # and deb-push won't push them (existing branches just go stale; delete them by
 # hand if you want them gone).
 declare -A skip_distros=(
-#    [libsession-python]='debian/bullseye ubuntu/jammy'
+    # jammy's liboxen-logging-dev lacks the bundled fmt/spdlog headers its own headers
+    # include, and pyoxenmq (unlike our other consumers) has no copy of its own.
+    # Nothing on jammy needs pyoxenmq >= 1.1 (session-pysogs isn't built there).
+    [pyoxenmq]='ubuntu/jammy'
 )
