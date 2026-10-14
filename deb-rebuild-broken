@@ -23,9 +23,11 @@
 #      reports why and leaves that repo alone;
 #   3. gives each remaining repo a +M rebuild bump (deb-rebuild --only <branch>),
 #      unless its branch already has a version newer than /staging's (a bump that
-#      was never published, or whose build failed), which just needs pushing;
+#      was never published, or whose build failed), which just needs building;
 #   4. pushes, watches CI and waits for you to publish to /staging, as deb-cascade
-#      does, then re-checks the rebuilt repos.
+#      does, then re-checks the rebuilt repos. A branch with nothing new to push
+#      has its last CI build restarted even if it succeeded, since that build may
+#      predate the transition.
 # A line is checked only once the lines before it are published, so a repo that
 # was broken only through a dependency isn't rebuilt when rebuilding that dependency
 # has already fixed it. Re-running after a failure carries on where it stopped.
@@ -244,7 +246,7 @@ for line in "${BUILD_STEPS[@]}"; do
     for r in "${todo[@]}"; do
         in_repo "$r" git fetch -q origin
         if in_repo "$r" newer_than_published "$branch" "${R_VER[$r]}"; then
-            msg "[$(cpkg "$r")] $branch already has a version newer than $STAGING's; pushing it without a new bump"
+            msg "[$(cpkg "$r")] $branch already has a version newer than $STAGING's; rebuilding it without a new bump"
         else
             msg "[$(cpkg "$r")] rebuild bump on $branch ..."
             SP_NO_PUSH_HINT=1 "$SP_ROOT/deb-rebuild" "$r" --only "$branch" -m "$message"
@@ -252,7 +254,7 @@ for line in "${BUILD_STEPS[@]}"; do
     done
 
     # 4) push, watch, and wait for the /staging publish.
-    push_and_watch "$branch" "${todo[@]}"
+    push_and_watch --fresh "$branch" "${todo[@]}"
     [ "${#MON_FAILED[@]}" -eq 0 ] ||
         die "CI failed for: $(cpkg "${MON_FAILED[*]}") — fix and re-run (a rebuild already on its branch is pushed again, not bumped again)"
     msg ""

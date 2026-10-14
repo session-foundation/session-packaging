@@ -100,7 +100,7 @@ slug="$(origin_slug)"
 [ -n "$slug" ] || { warn "couldn't determine the origin slug — not watching CI"; exit 0; }
 MON_ITEMS=()
 for b in "${selected[@]}"; do
-    MON_ITEMS+=("$b|$slug|$b|$(git rev-parse "$b")|0")
+    MON_ITEMS+=("$b|$slug|$b|$(git rev-parse "$b")|none")
 done
 msg "${C_DIM}(Ctrl-C to stop watching; re-run this deb-push to resume)${C_RESET}"
 monitor_ci

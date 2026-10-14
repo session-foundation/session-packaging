@@ -224,7 +224,8 @@ It leaves a broken repo alone when its build-deps can't be installed either,
 because a rebuild would only fail in CI; it says why. A branch that already
 carries a version newer than `/staging`'s (an unpublished bump, or one whose CI
 failed) is pushed as is, without another bump, so re-running after a failure
-carries on. `--check` only reports, against `/staging` as it is now. `-m` sets the
+carries on. If that branch is already on origin, its last CI build is restarted,
+even one that succeeded, because that build may predate the transition. `--check` only reports, against `/staging` as it is now. `-m` sets the
 changelog message (default "Rebuild against current `<codename>` libraries").
 
 Requires `apt install dose-distcheck dose-builddebcheck`, and `woodpecker-cli`

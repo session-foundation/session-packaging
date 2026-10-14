@@ -1136,18 +1136,25 @@ require_repo_dist() {
 Export that distribution in reprepro first (an empty one is fine), then re-run."
 }
 
+# push_and_watch [--fresh] <branch> <repo>...
+#
 # Push <branch> in each <repo> (deb-push --no-wait, so its pre-checks run) and watch
 # all the CI builds to completion with monitor_ci, which sets MON_FAILED. A repo
 # whose branch was already on the remote at this commit lets monitor_ci restart a
 # stale failed build once, which is what makes re-running a cascade after a failure
-# work; a fresh push never restarts. Polls every DEB_CASCADE_POLL seconds (default 4).
+# work; a newly pushed commit never restarts anything. With --fresh, a stale build
+# that succeeded is restarted too, for a rebuild with nothing new to push: a build
+# from before a distro library transition produced packages the transition broke.
+# Polls every DEB_CASCADE_POLL seconds (default 4).
 push_and_watch() {
+    local stale=failed
+    if [ "${1:-}" = --fresh ]; then stale=any; shift; fi
     local branch="$1" r rem; shift
-    local -A sha=() noop=()
+    local -A sha=() restart=()
     for r; do
         sha[$r]="$(in_repo "$r" git rev-parse "$branch")"
         rem="$(in_repo "$r" git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
-        [ "$rem" = "${sha[$r]}" ] && noop[$r]=1 || noop[$r]=0
+        [ "$rem" = "${sha[$r]}" ] && restart[$r]="$stale" || restart[$r]=none
         msg "[$(cpkg "$r")] pushing $branch ..."
         # --no-wait: everything is watched together below, and deb-push's own watch
         # would die on a stale failure before monitor_ci could restart it.
@@ -1155,7 +1162,7 @@ push_and_watch() {
     done
     MON_ITEMS=()
     for r; do
-        MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${noop[$r]}")
+        MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${restart[$r]}")
     done
     MON_POLL="${DEB_CASCADE_POLL:-4}"
     monitor_ci
@@ -1267,9 +1274,11 @@ ci_terminal() {
 # terminal tag when done, with an OSC-8 link to the build). Shared by deb-cascade
 # (one item per repo) and deb-push (one item per pushed branch).
 #
-# Input:  MON_ITEMS — each entry "label|slug|branch|sha|noop[|old]"; noop=1 lets a
-#                     stale build that is *already* failed when first seen be
-#                     restarted once (cascade reentrancy), 0 = never restart.
+# Input:  MON_ITEMS — each entry "label|slug|branch|sha|restart[|old]". <restart>
+#                     says which stale build (one *already* finished when first
+#                     seen) is restarted, once: "failed" restarts one that didn't
+#                     succeed (cascade reentrancy), "any" one that succeeded too
+#                     (a rebuild with nothing new to push), "none" never restarts.
 #                     Optional <old> is a build number to ignore (one the caller
 #                     just restarted), so the watch waits for its replacement.
 #         MON_POLL  — seconds between polls (default 4).
@@ -1279,9 +1288,9 @@ ci_terminal() {
 MON_ITEMS=(); MON_FAILED=()
 monitor_ci() {
     local poll="${MON_POLL:-4}" n=0 i rec
-    local -a lbl slug br sha noop old
+    local -a lbl slug br sha restart old
     for rec in "${MON_ITEMS[@]}"; do
-        IFS='|' read -r "lbl[$n]" "slug[$n]" "br[$n]" "sha[$n]" "noop[$n]" "old[$n]" <<< "$rec"
+        IFS='|' read -r "lbl[$n]" "slug[$n]" "br[$n]" "sha[$n]" "restart[$n]" "old[$n]" <<< "$rec"
         n=$((n + 1))
     done
     MON_FAILED=()
@@ -1289,11 +1298,11 @@ monitor_ci() {
     local wid=1
     for ((i = 0; i < n; i++)); do [ "${#lbl[i]}" -gt "$wid" ] && wid="${#lbl[i]}"; done
 
-    local -A bnum=() cst=() restarted=() oldfail=() gaveup=() tries=() rid=() ridof=() seen=()
+    local -A bnum=() cst=() restarted=() ignore=() gaveup=() tries=() rid=() ridof=() seen=()
     for ((i = 0; i < n; i++)); do
         [ -n "${ridof[${slug[i]}]:-}" ] || ridof[${slug[i]}]="$(ci_repo_id "${slug[i]}")"
         rid[$i]="${ridof[${slug[i]}]}"
-        [ -z "${old[i]:-}" ] || oldfail[$i]="${old[i]}"
+        [ -z "${old[i]:-}" ] || ignore[$i]="${old[i]}"
         if [ -z "${rid[$i]}" ]; then
             warn "${slug[i]} isn't an active repo on $CI_SERVER"
             gaveup[$i]=1; cst[$i]=nobuild
@@ -1313,7 +1322,7 @@ monitor_ci() {
             fi
             if [ -z "${bnum[$i]:-}" ]; then
                 cand="$(ci_build_for "${rid[$i]}" "${br[i]}" "${sha[i]}" 2>/dev/null || true)"
-                if [ -n "$cand" ] && [ "$cand" != "${oldfail[$i]:-}" ]; then
+                if [ -n "$cand" ] && [ "$cand" != "${ignore[$i]:-}" ]; then
                     bnum[$i]="$cand"; tries[$i]=0
                 else
                     tries[$i]=$(( ${tries[$i]:-0} + 1 ))
@@ -1331,11 +1340,12 @@ monitor_ci() {
             ov="$(printf '%s\n' "$detail" | sed -n 's/^STATUS=//p' | head -1)"; [ -n "$ov" ] || ov=pending
             # Only on first sight: a build that fails while being watched is a real
             # failure to report, not a stale one to retry.
-            if [ -z "${seen[$i]:-}" ] && [ "${restarted[$i]:-0}" = 0 ] && [ "${noop[i]:-0}" = 1 ] \
-               && ci_terminal "$ov" && [ "$ov" != success ]; then
+            if [ -z "${seen[$i]:-}" ] && [ "${restarted[$i]:-0}" = 0 ] && ci_terminal "$ov" \
+               && { [ "${restart[i]:-none}" = any ] ||
+                    { [ "${restart[i]:-none}" = failed ] && [ "$ov" != success ]; }; }; then
                 if ci_restart "${rid[$i]}" "${bnum[$i]}"; then
-                    restarted[$i]=1; oldfail[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
-                    lines+=("$(printf '  %s %srestarting #%s…%s' "$lf" "$C_WARN" "${oldfail[$i]}" "$C_RESET")"); continue
+                    restarted[$i]=1; ignore[$i]="${bnum[$i]}"; bnum[$i]=""; all_done=0
+                    lines+=("$(printf '  %s %srestarting #%s…%s' "$lf" "$C_WARN" "${ignore[$i]}" "$C_RESET")"); continue
                 fi
             fi
             if [ -n "$detail" ]; then seen[$i]=1; fi

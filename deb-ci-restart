@@ -59,7 +59,7 @@ for b in "${SELECTED[@]}"; do
     fi
     msg ">> $(cpkg "$b") restarting #$num"
     ci_restart "$rid" "$num" || { warn "$b: failed to restart #$num"; fail=1; continue; }
-    MON_ITEMS+=("$b|$slug|$b|$sha|0|$num")
+    MON_ITEMS+=("$b|$slug|$b|$sha|none|$num")
 done
 [ "${#MON_ITEMS[@]}" -gt 0 ] || die "nothing was restarted"
 
