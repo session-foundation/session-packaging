@@ -827,11 +827,36 @@ cached_index() {
     done
 }
 
+# cached_index for each <url>, up to INDEX_FETCH_JOBS at once, printing one line per
+# <url> in the order given: its cached path, or an empty line if it isn't published.
+INDEX_FETCH_JOBS=8
+cached_indices() {
+    local dir u i=0 running=0
+    dir="$(mktemp -d)"
+    for u; do
+        if [ "$running" -ge "$INDEX_FETCH_JOBS" ]; then
+            wait -n || true
+            running=$((running - 1))
+        fi
+        cached_index "$u" > "$dir/$i" &
+        running=$((running + 1)) i=$((i + 1))
+    done
+    wait
+    for ((i = 0; i < $#; i++)); do printf '%s\n' "$(cat "$dir/$i")"; done
+    rm -rf "$dir"
+}
+
+# URL of the <suffix>/<distro>/<arch> Packages index of our repo, without
+# compression extension. <suffix> is the reprepro repo suffix ('', '/beta',
+# '/staging').
+repo_index_url() {
+    printf '%s\n' "https://$DEB_REPO_HOST$1/dists/$2/main/binary-$3/Packages"
+}
+
 # Path of the cached <suffix>/<distro>/<arch> Packages index of our repo (see
-# cached_index), or nothing if it isn't published. <suffix> is the reprepro repo
-# suffix ('', '/beta', '/staging').
+# cached_index), or nothing if it isn't published.
 repo_index() {
-    cached_index "https://$DEB_REPO_HOST$1/dists/$2/main/binary-$3/Packages"
+    cached_index "$(repo_index_url "$1" "$2" "$3")"
 }
 
 # Version of <pkg> in Packages index <file> (plain or gzipped), or empty.
@@ -966,23 +991,40 @@ distro_archive_urls() {
     esac
 }
 
-# Fetch <branch>'s distro archive indices for <arch> (see distro_archive_urls) and
-# set DISTRO_INDICES to their cached paths. Each branch/arch is fetched once per run:
-# call this directly, not in a subshell, or that memo is lost.
-DISTRO_INDICES=()
+# fetch_distro_indices <branch> <arch>...
+#
+# Fetch <branch>'s distro archive indices (see distro_archive_urls) for each <arch>
+# not fetched yet this run, all in parallel, for distro_indices to return. Call this
+# directly, not in a subshell, or the memo of what was fetched is lost.
 declare -gA _distro_indices=()
-distro_indices() {
-    local key="$1|$2" u p list=""
-    if [ -z "${_distro_indices[$key]+set}" ]; then
-        msg "${C_DIM}fetching the $1 $2 archive indices...$C_RESET"
+fetch_distro_indices() {
+    local branch="$1" arch u i; shift
+    local -a want=() urls=() url_arch=() paths=()
+    for arch; do
+        [ -z "${_distro_indices[$branch|$arch]+set}" ] || continue
+        want+=("$arch")
         while read -r u; do
-            p="$(cached_index "$u")"
-            [ -z "$p" ] || list+="$p"$'\n'
-        done < <(distro_archive_urls "$1" "$2")
-        [ -n "$list" ] || die "no $1 archive indices found for $2"
-        _distro_indices[$key]="$list"
-    fi
-    mapfile -t DISTRO_INDICES < <(printf '%s' "${_distro_indices[$key]}")
+            urls+=("$u"); url_arch+=("$arch")
+        done < <(distro_archive_urls "$branch" "$arch")
+    done
+    [ "${#want[@]}" -gt 0 ] || return 0
+    msg "${C_DIM}fetching the $branch archive indices for ${want[*]}...$C_RESET"
+    mapfile -t paths < <(cached_indices "${urls[@]}")
+    for arch in "${want[@]}"; do _distro_indices[$branch|$arch]=""; done
+    for i in "${!urls[@]}"; do
+        [ -z "${paths[i]:-}" ] || _distro_indices[$branch|${url_arch[i]}]+="${paths[i]}"$'\n'
+    done
+    for arch in "${want[@]}"; do
+        [ -n "${_distro_indices[$branch|$arch]}" ] || die "no $branch archive indices found for $arch"
+    done
+}
+
+# Set DISTRO_INDICES to the cached paths of <branch>'s distro archive indices for
+# <arch>, fetching them first if fetch_distro_indices hasn't. Same subshell caveat.
+DISTRO_INDICES=()
+distro_indices() {
+    fetch_distro_indices "$1" "$2"
+    mapfile -t DISTRO_INDICES < <(printf '%s' "${_distro_indices[$1|$2]}")
 }
 
 # Source package name in <ref>'s debian/control (often not the checkout's name:
