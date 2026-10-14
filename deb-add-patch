@@ -38,7 +38,7 @@
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
-INVOCATION="$0 $*"
+INVOCATION="$(shell_quote "$0" "$@")"
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac

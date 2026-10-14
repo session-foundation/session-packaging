@@ -821,7 +821,21 @@ Finish it (git {merge,rebase,cherry-pick} --continue) then re-run to resume."
     fi
 }
 
-# Print resume instructions and stop. Uses INVOCATION (set by each tool).
+# The arguments as a command line to paste back into a shell, quoting only the
+# words that need it.
+shell_quote() {
+    local a out=""
+    for a; do
+        case "$a" in
+            ''|*[!A-Za-z0-9_./:=@%+,-]*) a="${a@Q}" ;;
+        esac
+        out+="${out:+ }$a"
+    done
+    printf '%s\n' "$out"
+}
+
+# Print resume instructions and stop. Uses INVOCATION (each tool's own command
+# line, from shell_quote).
 conflict_halt() {
     local b="$1" phase="$2" what="$3"
     save_state "$b" "$phase"

@@ -40,7 +40,7 @@
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
-INVOCATION="$0 $*"
+INVOCATION="$(shell_quote "$0" "$@")"
 
 # Classify active distro branches that don't exist yet: CREATABLE ones can be
 # forked (family base present + a defined suffix); any that can't are fatal (abort

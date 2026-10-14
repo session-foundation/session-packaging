@@ -28,7 +28,7 @@
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
-INVOCATION="$0 $*"
+INVOCATION="$(shell_quote "$0" "$@")"
 
 # Auto-detect packaging commits on the (checked-out) debian/sid branch: commits
 # since the last changelog entry that change more than just changelog/control.
