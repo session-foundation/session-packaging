@@ -274,6 +274,13 @@ git operation (`git merge/rebase/cherry-pick --continue`), and **re-run the exac
 same command** — it skips completed branches and continues. To abandon, delete
 that state file.
 
+For a `deb-add-patch`/`deb-pkg-update` cherry-pick conflict there's another way
+out: `git cherry-pick --abort`, then re-run, which starts that branch over. Re-run
+it with different commits (say, a variant of the change that applies to the older
+branches) and those are used for that branch and the rest; the branches already
+done keep the original ones. On resume, an option given again (`-m`, `--no-bump`,
+`--only`) must match the original run's, and one left out keeps it.
+
 ## `build-distros.bash`
 
 Sourced by all tools. Defines:

@@ -111,7 +111,11 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
   conflict the tool records progress and exits; the user resolves + completes the
   git op, then re-runs the *same command* to continue. `run_multibranch` skips
   completed branches. Running a *different* operation while a state file exists is
-  refused.
+  refused. Tools parse their arguments on resume too: a phase begun with
+  `begin_phase` (the cherry-picks) records its branch head, so a resume can tell an
+  aborted pick (branch unmoved, nothing in progress) from a resolved one and start
+  that branch over, and only then may different commits replace the saved ones
+  (`resume_commits`). `ensure_resolved` alone can't tell the two apart.
 * **Per-branch `gbp.conf`**: each branch sets its own `debian-branch`/`dist`, so
   `gbp dch` runs with `--ignore-branch`, `--spawn-editor=never` (the user hates
   the editor popup), and an explicit `--distribution`. It still auto-generates

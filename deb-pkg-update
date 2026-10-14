@@ -45,13 +45,13 @@ detect_pkg_commits() {
     done < <(git rev-list --reverse "$last..HEAD")
 }
 
-# Resolve commit_args into COMMITS (full hashes). HEAD-relative refs (HEAD, HEAD~2,
+# Resolve commit_args into RESOLVED (full hashes). HEAD-relative refs (HEAD, HEAD~2,
 # @^, …) are taken relative to debian/sid rather than whatever the checkout happens
 # to have checked out, since sid is where packaging commits are normally made.
 resolve_commits() {
     local c r h sid
     sid="$(branch_ref debian/sid)"
-    COMMITS=()
+    RESOLVED=()
     for c in "${commit_args[@]}"; do
         case "$c" in
             HEAD|HEAD[~^]*) r="$sid${c#HEAD}" ;;
@@ -59,7 +59,7 @@ resolve_commits() {
             *) r="$c" ;;
         esac
         h="$(git rev-parse --verify -q "$r^{commit}")" || die "unknown commit: $c"
-        COMMITS+=("$h")
+        RESOLVED+=("$h")
     done
 }
 
@@ -68,23 +68,32 @@ case "$1" in -h|--help) usage 0 ;; esac
 repo="$1"; shift
 resolve_repo "$repo"
 
+arg_msg="" arg_msg_set=0 arg_nobump=0
+commit_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m) shift; [ $# -gt 0 ] || die "-m requires a message"; arg_msg="$1" arg_msg_set=1 ;;
+        -m*) arg_msg="${1#-m}" arg_msg_set=1 ;;
+        --no-bump) arg_nobump=1 ;;
+        -h|--help) usage 0 ;;
+        -*) die "unknown option: $1" ;;
+        *) commit_args+=("$1") ;;
+    esac
+    shift
+done
+
 begin_or_resume pkg-update
 
-if [ "$RESUMING" = 0 ]; then
-    COMMIT_MSG=""
-    NOBUMP=0
-    commit_args=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
-            -m*) COMMIT_MSG="${1#-m}" ;;
-            --no-bump) NOBUMP=1 ;;
-            -h|--help) usage 0 ;;
-            -*) die "unknown option: $1" ;;
-            *) commit_args+=("$1") ;;
-        esac
-        shift
-    done
+if [ "$RESUMING" = 1 ]; then
+    [ "$arg_msg_set" = 0 ] || resume_option -m "$COMMIT_MSG" "$arg_msg"
+    [ "$arg_nobump" = 0 ] || resume_option --no-bump "$NOBUMP" 1
+    if [ "${#commit_args[@]}" -gt 0 ]; then
+        resolve_commits
+        resume_commits "${RESOLVED[@]}"
+    fi
+else
+    COMMIT_MSG="$arg_msg"
+    NOBUMP="$arg_nobump"
 
     require_clean_tree
     msg "Fetching origin..."
@@ -94,6 +103,7 @@ if [ "$RESUMING" = 0 ]; then
         [ -z "$COMMIT_MSG" ] || die "--no-bump writes no changelog entry, so it doesn't take -m"
         [ "${#commit_args[@]}" -gt 0 ] || die "--no-bump needs explicit commit ref(s) to cherry-pick"
         resolve_commits
+        COMMITS=("${RESOLVED[@]}")
         # Operate on the active branches that exist; skip ones not yet created
         # (e.g. a distro that deb-version-bump will add later).
         order=()
@@ -110,6 +120,7 @@ if [ "$RESUMING" = 0 ]; then
         checkout_uptodate debian/sid
         if [ "${#commit_args[@]}" -gt 0 ]; then
             resolve_commits
+            COMMITS=("${RESOLVED[@]}")
         else
             mapfile -t COMMITS < <(detect_pkg_commits)
             [ "${#COMMITS[@]}" -ge 1 ] || die \
@@ -145,7 +156,7 @@ proc_pkgupdate() {
                 msg "  already present — $C_DIM skipping$C_RESET"
                 return
             fi
-            save_state "$b" cherry-pick
+            begin_phase "$b" cherry-pick
             git cherry-pick "${pick[@]}" ||
                 conflict_halt "$b" cherry-pick "cherry-picking the packaging change onto $b"
         else
@@ -160,7 +171,7 @@ proc_pkgupdate() {
     fi
     if [ -z "$RESUME_PHASE" ]; then
         checkout_uptodate "$b"
-        save_state "$b" cherry-pick
+        begin_phase "$b" cherry-pick
         git cherry-pick "${COMMITS[@]}" ||
             conflict_halt "$b" cherry-pick "cherry-picking the packaging change onto $b"
     else

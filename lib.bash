@@ -673,10 +673,31 @@ save_state() {
         printf 'missing=%s\n'        "$(_sq "${MISSING[*]:-}")"
         printf 'ubuntu_base=%s\n'    "$(_sq "${UBUNTU_BASE:-}")"
         printf 'nobump=%s\n'         "$(_sq "${NOBUMP:-0}")"
+        printf 'phase_ref=%s\n'      "$(_sq "${PHASE_REF:-}")"
+        printf 'phase_head=%s\n'     "$(_sq "${PHASE_HEAD:-}")"
     } > "$STATE_FILE"
 }
 
 clear_state() { rm -f "$STATE_FILE"; }
+
+# begin_phase <branch> <phase>
+#
+# save_state for a phase whose git operation a resume must be able to tell apart
+# from an abandoned one: it also records the checked-out branch and its commit, which
+# `git cherry-pick --abort` puts back (see phase_abandoned). Only for a branch's last
+# conflict point, since an abandoned phase means starting the whole branch over.
+begin_phase() {
+    PHASE_REF="$(git symbolic-ref -q HEAD)" || die "begin_phase: HEAD is detached"
+    PHASE_HEAD="$(git rev-parse HEAD)"
+    save_state "$1" "$2"
+}
+
+# On resume: was the interrupted begin_phase operation abandoned, leaving its branch
+# where it started with no git operation in progress?
+phase_abandoned() {
+    [ -n "${PHASE_HEAD:-}" ] && ! git_op_in_progress &&
+        [ "$(git rev-parse -q --verify "$PHASE_REF" 2>/dev/null)" = "$PHASE_HEAD" ]
+}
 
 # If a state file exists it must match <op>; load it (sets RESUMING=1 and the
 # operation globals). Otherwise RESUMING=0.
@@ -693,11 +714,14 @@ begin_or_resume() {
     MISSING=()
     UBUNTU_BASE=""
     NOBUMP=0
+    PHASE_REF=""
+    PHASE_HEAD=""
     [ -f "$STATE_FILE" ] || return 0
 
     local operation='' version_base='' source_ref='' commit_msg='' \
           commits='' completed='' current_branch='' current_phase='' \
-          target='' partial='' missing='' ubuntu_base='' nobump=''
+          target='' partial='' missing='' ubuntu_base='' nobump='' \
+          phase_ref='' phase_head=''
     # shellcheck disable=SC1090
     source "$STATE_FILE"
     [ "$operation" = "$op" ] || die \
@@ -716,8 +740,43 @@ Resume it by re-running its command, or abandon it with:
     PARTIAL="${partial:-0}"
     UBUNTU_BASE="$ubuntu_base"
     NOBUMP="${nobump:-0}"
+    PHASE_REF="$phase_ref"
+    PHASE_HEAD="$phase_head"
     read -ra COMMITS <<< "$commits"
     read -ra MISSING <<< "$missing"
+}
+
+# resume_option <option> <saved value> <given value>
+#
+# On resume, an option given again must match the interrupted operation's (one left
+# out keeps it): the branches already done were made with the saved value.
+resume_option() {
+    [ "$2" = "$3" ] || die \
+"$1 doesn't match the unfinished $OPERATION for $REPO, which uses: ${2:-(none)}
+Leave it out to resume with that, or abandon the operation with:
+    rm $STATE_FILE"
+}
+
+# resume_commits <commit>...
+#
+# On resume with commits given again: use them instead of the saved ones for the
+# branches not done yet. Only allowed if the interrupted branch's cherry-pick was
+# abandoned, so that no branch ends up with both.
+resume_commits() {
+    [ "$*" != "${COMMITS[*]}" ] || return 0
+    if [ -n "$RESUME_CURRENT" ] && ! phase_abandoned; then
+        if git_op_in_progress; then
+            die "the $CURRENT_PHASE on $RESUME_CURRENT is still in progress with the original commits.
+To use different commits, abort it first (git cherry-pick --abort), then re-run."
+        fi
+        die "the $CURRENT_PHASE on $RESUME_CURRENT was completed with the original commits, so it
+can't switch to different ones now. Resume without giving commits to carry on with:
+    ${COMMITS[*]}"
+    fi
+    msg "Using $* in place of ${COMMITS[*]} for the branches not done yet"
+    [ -z "${COMPLETED// /}" ] || msg "  (already done with the original commits:$COMPLETED)"
+    COMMITS=("$@")
+    save_state "$RESUME_CURRENT" "$CURRENT_PHASE"
 }
 
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -734,7 +793,10 @@ run_multibranch() {
             msg "$C_HDR== $(cpkg "$b")$C_HDR ==$C_RESET $C_DIM(already done, skipping)$C_RESET"
             continue
         fi
-        if [ "$RESUMING" = 1 ] && [ "$b" = "$RESUME_CURRENT" ]; then
+        if [ "$RESUMING" = 1 ] && [ "$b" = "$RESUME_CURRENT" ] && phase_abandoned; then
+            RESUME_PHASE=""
+            msg "$C_HDR== $(cpkg "$b")$C_HDR ==$C_RESET (its '$CURRENT_PHASE' was abandoned; starting it over)"
+        elif [ "$RESUMING" = 1 ] && [ "$b" = "$RESUME_CURRENT" ]; then
             RESUME_PHASE="$CURRENT_PHASE"
             msg "$C_HDR== $(cpkg "$b")$C_HDR ==$C_RESET (resuming at '$RESUME_PHASE')"
         else
@@ -743,6 +805,7 @@ run_multibranch() {
         fi
         "$process_fn" "$b"
         COMPLETED="$COMPLETED $b"
+        PHASE_REF="" PHASE_HEAD=""
         save_state "" ""
     done
     clear_state

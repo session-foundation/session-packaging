@@ -45,26 +45,61 @@ case "$1" in -h|--help) usage 0 ;; esac
 repo="$1"; shift
 resolve_repo "$repo"
 
+# The active branches the --only globs match, space-separated, in order.
+only_target() {
+    local g b m hits=""
+    for g in "${only_globs[@]}"; do
+        m=""
+        for b in "${distros[@]}"; do case "$b" in $g) m+=" $b" ;; esac; done
+        [ -n "$m" ] || die "no active branch matches '$g'"
+        hits+="$m"
+    done
+    printf '%s\n' $hits | awk 'NF && !seen[$0]++' | tr '\n' ' '
+}
+
+# Resolve commit_args into RESOLVED (full hashes), before any branch switching.
+resolve_commits() {
+    local c h
+    RESOLVED=()
+    for c in "${commit_args[@]}"; do
+        h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
+        RESOLVED+=("$h")
+    done
+}
+
+arg_msg="" arg_msg_set=0 arg_nobump=0
+commit_args=()
+only_globs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m) shift; [ $# -gt 0 ] || die "-m requires a message"; arg_msg="$1" arg_msg_set=1 ;;
+        -m*) arg_msg="${1#-m}" arg_msg_set=1 ;;
+        --no-bump) arg_nobump=1 ;;
+        --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "$1") ;;
+        --only=*) mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "${1#--only=}") ;;
+        -h|--help) usage 0 ;;
+        -*) die "unknown option: $1" ;;
+        *) commit_args+=("$1") ;;
+    esac
+    shift
+done
+
 begin_or_resume add-patch
 
-if [ "$RESUMING" = 0 ]; then
-    COMMIT_MSG=""
-    NOBUMP=0
-    commit_args=()
-    only_globs=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -m) shift; [ $# -gt 0 ] || die "-m requires a message"; COMMIT_MSG="$1" ;;
-            -m*) COMMIT_MSG="${1#-m}" ;;
-            --no-bump) NOBUMP=1 ;;
-            --only) shift; [ $# -gt 0 ] || die "--only needs a distro glob"; mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "$1") ;;
-            --only=*) mapfile -t -O "${#only_globs[@]}" only_globs < <(expand_distro_spec "${1#--only=}") ;;
-            -h|--help) usage 0 ;;
-            -*) die "unknown option: $1" ;;
-            *) commit_args+=("$1") ;;
-        esac
-        shift
-    done
+if [ "$RESUMING" = 1 ]; then
+    [ "$arg_msg_set" = 0 ] || resume_option -m "$COMMIT_MSG" "$arg_msg"
+    [ "$arg_nobump" = 0 ] || resume_option --no-bump "$NOBUMP" 1
+    if [ "${#only_globs[@]}" -gt 0 ]; then
+        target="$(only_target)"
+        resume_option --only "$TARGET" "$target"
+    fi
+    if [ "${#commit_args[@]}" -gt 0 ]; then
+        resolve_commits
+        resume_commits "${RESOLVED[@]}"
+    fi
+else
+    COMMIT_MSG="$arg_msg"
+    NOBUMP="$arg_nobump"
     [ "${#commit_args[@]}" -ge 1 ] || die "at least one commit to cherry-pick is required"
     if [ "$NOBUMP" = 1 ]; then
         [ -z "$COMMIT_MSG" ] || die "--no-bump writes no changelog entry, so it doesn't take -m"
@@ -80,24 +115,13 @@ if [ "$RESUMING" = 0 ]; then
     # intact); --no-bump leaves the version untouched entirely.
     if [ "${#only_globs[@]}" -gt 0 ]; then
         [ "$NOBUMP" = 1 ] || PARTIAL=1
-        hits=""
-        for g in "${only_globs[@]}"; do
-            m=""
-            for b in "${distros[@]}"; do case "$b" in $g) m+=" $b" ;; esac; done
-            [ -n "$m" ] || die "no active branch matches '$g'"
-            hits+="$m"
-        done
-        TARGET="$(printf '%s\n' $hits | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+        TARGET="$(only_target)"
     fi
 
     require_branches
 
-    # Resolve commit-ish to stable hashes now (before switching branches).
-    COMMITS=()
-    for c in "${commit_args[@]}"; do
-        h="$(git rev-parse --verify -q "$c^{commit}")" || die "unknown commit: $c"
-        COMMITS+=("$h")
-    done
+    resolve_commits
+    COMMITS=("${RESOLVED[@]}")
 
     if [ "$NOBUMP" = 1 ]; then
         msg "Patching (no bump) $(cpkg "${TARGET:-${distros[*]}}"): ${#COMMITS[@]} commit(s)"
@@ -117,7 +141,7 @@ proc_patch() {
     if [ -z "$RESUME_PHASE" ]; then
         checkout_uptodate "$b"
         gbp pq import --force                # leaves us on the patch-queue branch
-        save_state "$b" cherry-pick
+        begin_phase "$b" cherry-pick
         git cherry-pick "${COMMITS[@]}" ||
             conflict_halt "$b" cherry-pick "cherry-picking onto the $b patch queue"
     else
