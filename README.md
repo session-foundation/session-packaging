@@ -2,8 +2,7 @@
 
 Scripts for building and releasing Debian/Ubuntu (`.deb`) packages for
 Session-related software (oxen-core, session-storage-server, session-router, and
-libraries such as libsession-util, oxen-encoding, oxen-mq, oxen-logging, libquic,
-…).
+libraries such as libsession, oxen-encoding, oxen-mq, oxen-logging, libquic, …).
 
 This directory is the canonical working tree for packaging. Each package's
 repository is cloned in as a **git-ignored checkout** (a subdirectory, e.g.

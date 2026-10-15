@@ -12,12 +12,12 @@
 #
 #   liboxenmq              -> oxen-encoding, oxen-logging
 #   libquic                -> oxen-encoding, oxen-logging
-#   libsession-util        -> oxen-encoding, libquic
+#   libsession             -> oxen-encoding, libquic
 #   pyoxenc                -> oxen-encoding
 #   lokinet                -> liboxenmq
 #   oxen-core              -> liboxenmq, oxen-logging
 #   pyoxenmq               -> liboxenmq
-#   libsession-python      -> libsession-util
+#   libsession-python      -> libsession
 #   session-router         -> liboxenmq, libquic, oxen-encoding, oxen-logging
 #   session-storage-server -> liboxenmq, libquic, oxen-encoding, oxen-logging
 #   session-pysogs         -> pyoxenc, pyoxenmq
@@ -27,5 +27,5 @@
 
 oxen-encoding oxen-logging
 liboxenmq libquic pyoxenc
-libsession-util lokinet oxen-core pyoxenmq session-router session-storage-server
+libsession lokinet oxen-core pyoxenmq session-router session-storage-server
 libsession-python session-pysogs
