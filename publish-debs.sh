@@ -72,11 +72,13 @@ for m in kali/kali-rolling; do
     distro_map["$m"]="debian/forky"
 done
 
-# These packages are universal enough (mostly pure-Python modules) that they will work on
-# everything, and so we only build one for debian/sid and then use that one for everything.
+# These packages are universal enough (pure-Python modules, or architecture-independent scripts and
+# config) that they will work on everything, and so we only build one for debian/sid and then use
+# that one for everything.
 declare -A sid_only=(
     [oxen-io/better_profanity]=1
     [oxen-io/session-pysogs]=1
+    [session-foundation/session-multi-sn]=1
 )
 
 projects=()
@@ -89,7 +91,7 @@ for p; do
 done
 if [ "${#projects[@]}" -eq 0 ]; then
     projects=(oxen-io/oxen-core
-        session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession,libsession-python,session-router,session-storage-server,pyoxenc}
+        session-foundation/{oxen-encoding,liboxenmq,pyoxenmq,liblogging,libquic,libsession,libsession-python,session-router,session-storage-server,pyoxenc,session-multi-sn}
         oxen-io/{lokinet,session-pysogs,better_profanity}
         jagerman/{libonionrequests,ethyl}
     )
