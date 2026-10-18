@@ -37,8 +37,9 @@ contains that packaging; it orchestrates it.
   `/staging`).
 * `deb-rebuild-broken` — the same cascade for a distro library transition: per
   `build-order` line it uses dose3 (`dose-debcheck`/`dose-builddebcheck`) to find
-  which repos' newest `/staging` packages can't be installed from the distro
-  archive plus `/staging`, `deb-rebuild --only`s those (`+M`) and pushes them. The
+  which repos' newest packages in main + `/staging` (`--beta`: `/beta` +
+  `/staging`) can't be installed from the distro archive plus those repos,
+  `deb-rebuild --only`s those (`+M`) and pushes them. The
   push/watch/publish-wait steps are shared with `deb-cascade` in lib.bash.
 * `build-order` — hand-maintained cross-repo dependency ordering (one line per
   parallelizable build step). Derived from `is_our_package` build-deps.
@@ -134,9 +135,11 @@ Future RPM support should reuse `lib.bash` with thin `rpm-*` wrappers.
   The catch: a backport the distro could satisfy on its own still fails the check
   if our repo has an older one.
 * **The installability check** (`deb-rebuild-broken`) looks only at the binaries of
-  each source's *newest* version in `/staging`: reprepro keeps old-soname packages
-  (`libsession-util1.6.7` next to `1.9.4`) that nothing installs any more, and those
-  stay broken forever. Binaries are matched to a repo by `Source:`, which often
+  each source's *newest* version across main (or `/beta`) + `/staging`: reprepro
+  keeps old-soname packages (`libsession-util1.6.7` next to `1.9.4`) that nothing
+  installs any more, and those stay broken forever. Its build-dep check, by
+  contrast, uses `/staging` alone, because that is all a CI build's apt sees
+  (`repo_suffix`). Binaries are matched to a repo by `Source:`, which often
   isn't the checkout name (libquic's is `oxen-libquic`). `distro_archive_urls`
   mirrors the builder images' apt sources and must be kept in step with them.
   dose3 wants the packages to check as a separate `--fg` file (its `--checkonly`

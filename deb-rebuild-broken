@@ -4,26 +4,32 @@
 # distro library transition (such as sid moving to a new fmt soname) has left
 # uninstallable on one distro, and push the rebuilds.
 #
-# Usage: ./deb-rebuild-broken <branch> [<repo>...] [--skip <repo>]... [-m "<msg>"] [--check]
+# Usage: ./deb-rebuild-broken <branch> [<repo>...] [--skip <repo>]... [-m "<msg>"] [--beta] [--check]
 #
 #   <branch>       distro branch, e.g. debian/sid (a bare codename like sid works)
 #   <repo>...      optional whitelist (default: all repos in build-order)
 #   --skip <repo>  exclude a repo (repeatable, or comma-separated)
 #   -m MSG         changelog message for the rebuilds
 #                  (default: "Rebuild against current <codename> libraries")
+#   --beta         check /staging layered on /beta instead of on the main repo
 #   -n, --check    report what is uninstallable, and whether a rebuild can fix it,
 #                  without changing or pushing anything
 #
+# /staging is an add-on to the main repo (or, with --beta, to /beta): a package can
+# be published straight to main or /beta without ever going through /staging. So
+# the checks look at the two together, as apt would with both configured.
+#
 # For each build-order line it:
 #   1. checks, on every arch the branch's CI builds, whether each repo's newest
-#      packages in /staging can be installed from the distro archive plus /staging
-#      (dose-debcheck), and leaves the installable ones alone;
+#      packages in main + /staging can be installed from the distro archive plus
+#      main + /staging (dose-debcheck), and leaves the installable ones alone;
 #   2. checks that each broken repo's build-deps can be installed
 #      (dose-builddebcheck): if they can't, a rebuild would only fail in CI, so it
 #      reports why and leaves that repo alone;
 #   3. gives each remaining repo a +M rebuild bump (deb-rebuild --only <branch>),
-#      unless its branch already has a version newer than /staging's (a bump that
-#      was never published, or whose build failed), which just needs building;
+#      unless its branch already has a version newer than the published one (a
+#      bump that was never published, or whose build failed), which just needs
+#      building;
 #   4. pushes, watches CI and waits for you to publish to /staging, as deb-cascade
 #      does, then re-checks the rebuilt repos. A branch with nothing new to push
 #      has its last CI build restarted even if it succeeded, since that build may
@@ -32,7 +38,7 @@
 # was broken only through a dependency isn't rebuilt when rebuilding that dependency
 # has already fixed it. Re-running after a failure carries on where it stopped.
 #
-# --check sees /staging as it is now, so it can't allow for rebuilds of earlier
+# --check sees the repos as they are now, so it can't allow for rebuilds of earlier
 # lines: a later repo it reports as broken may be fixed by them.
 #
 # Requires dose3 (apt install dose-distcheck dose-builddebcheck) and, unless
@@ -43,6 +49,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.bash"
 
 STAGING="/staging"
+BASE=""
 
 [ $# -ge 1 ] || usage
 case "$1" in -h|--help) usage 0 ;; esac
@@ -54,6 +61,7 @@ while [ $# -gt 0 ]; do
         --skip=*) IFS=, read -ra _sk <<< "${1#--skip=}"; skip+=("${_sk[@]}") ;;
         -m) shift; [ $# -gt 0 ] || die "-m requires a message"; message="$1" ;;
         -m*) message="${1#-m}" ;;
+        --beta) BASE="/beta" ;;
         -n|--check) check=1 ;;
         -h|--help) usage 0 ;;
         -*) die "unknown option: $1" ;;
@@ -64,6 +72,9 @@ done
 case "$branch" in debian/*|ubuntu/*) ;; *) die "branch must start with debian/ or ubuntu/" ;; esac
 [ -n "$message" ] || message="Rebuild against current ${branch#*/} libraries"
 dist="${branch#*/}"
+# Staging first: where both carry the same version, its binaries are the ones checked.
+CHECK_REPOS=("$STAGING" "$BASE")
+CHECKED="${BASE:-main} + $STAGING"
 
 require_dose
 [ "$check" = 1 ] || require_ci
@@ -75,11 +86,11 @@ want() {
     in_list "$1" "${only[*]}"
 }
 
-# check_repos <repo>... classifies each repo's newest $STAGING packages on $branch,
-# keyed by repo:
+# check_repos <repo>... classifies each repo's newest packages in $CHECK_REPOS on
+# $branch, keyed by repo:
 #   R_STATE  unpublished | ok | broken | blocked (broken, and its build-deps can't be
 #            installed either, so a rebuild can't fix it)
-#   R_VER    its newest version in $STAGING
+#   R_VER    its newest version in $CHECK_REPOS
 #   R_PKGS   its uninstallable binaries
 #   R_WHY    "<arch>\t<reason>" lines for those; R_BLOCK the same for the build-deps
 # Every arch's dose-debcheck and dose-builddebcheck run at once, each for all the
@@ -89,9 +100,9 @@ want() {
 # results are used.
 declare -A R_STATE=() R_VER=() R_PKGS=() R_WHY=() R_BLOCK=()
 check_repos() {
-    local r ref arch v f k pkg reason out work fg srcs
-    local -a all_arches stg_urls stg_paths bg
-    local -A src_of=() arches_of=() src_stanza=() stg=() owner=() src_owner=() job=()
+    local r ref arch v f k s pkg reason out work fg srcs
+    local -a all_arches urls paths ours bg
+    local -A src_of=() arches_of=() src_stanza=() idx=() owner=() src_owner=() job=()
     R_STATE=() R_VER=() R_PKGS=() R_WHY=() R_BLOCK=()
     for r; do
         cd "$SP_ROOT/$r"
@@ -107,25 +118,37 @@ check_repos() {
     mapfile -t all_arches < <(printf '%s\n' "${arches_of[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++')
 
     fetch_distro_indices "$branch" "${all_arches[@]}"
-    stg_urls=()
-    for arch in "${all_arches[@]}"; do stg_urls+=("$(repo_index_url "$STAGING" "$dist" "$arch")"); done
-    mapfile -t stg_paths < <(cached_indices "${stg_urls[@]}")
-    for k in "${!all_arches[@]}"; do stg[${all_arches[k]}]="${stg_paths[k]:-}"; done
+    urls=()
+    for arch in "${all_arches[@]}"; do
+        for s in "${CHECK_REPOS[@]}"; do urls+=("$(repo_index_url "$s" "$dist" "$arch")"); done
+    done
+    mapfile -t paths < <(cached_indices "${urls[@]}")
+    k=0
+    for arch in "${all_arches[@]}"; do
+        for s in "${CHECK_REPOS[@]}"; do idx[$s|$arch]="${paths[k]:-}"; k=$((k + 1)); done
+    done
 
     work="$(mktemp -d)"
     for arch in "${all_arches[@]}"; do
-        [ -n "${stg[$arch]}" ] || continue
+        ours=()
+        for s in "${CHECK_REPOS[@]}"; do
+            [ -z "${idx[$s|$arch]}" ] || ours+=("${idx[$s|$arch]}")
+        done
+        [ "${#ours[@]}" -gt 0 ] || continue
         fg="$work/$arch.fg" srcs="$work/$arch.src"
         : > "$fg"; : > "$srcs"
         for r; do
             in_list "$arch" "${arches_of[$r]}" || continue
             printf '%s\n\n' "${src_stanza[$r]}" >> "$srcs"
-            v="$(index_source_versions "${stg[$arch]}" "${src_of[$r]}" | newest_version)"
+            v="$(for f in "${ours[@]}"; do index_source_versions "$f" "${src_of[$r]}"; done | newest_version)"
             [ -n "$v" ] || continue
             if [ -z "${R_VER[$r]:-}" ] || dpkg --compare-versions "$v" gt "${R_VER[$r]}"; then
                 R_VER[$r]="$v"
             fi
-            out="$(index_source_stanzas "${stg[$arch]}" "${src_of[$r]}" "$v")"
+            for f in "${ours[@]}"; do
+                out="$(index_source_stanzas "$f" "${src_of[$r]}" "$v")"
+                [ -z "$out" ] || break
+            done
             printf '%s\n\n' "$out" >> "$fg"
             while read -r pkg; do
                 owner[$pkg]="$r"
@@ -133,15 +156,17 @@ check_repos() {
         done
         distro_indices "$branch" "$arch"
         if [ -s "$fg" ]; then
-            bg=(--bg "${stg[$arch]}")
-            for f in "${DISTRO_INDICES[@]}"; do bg+=(--bg "$f"); done
+            bg=()
+            for f in "${ours[@]}" "${DISTRO_INDICES[@]}"; do bg+=(--bg "$f"); done
             dose_run dose-debcheck --deb-native-arch="$arch" --failures --explain --fg "$fg" "${bg[@]}" \
                 > "$work/$arch.debcheck" &
             job[$arch.debcheck]=$!
         fi
-        if [ -s "$srcs" ]; then
+        # Only $STAGING here: CI builds install their build-deps from it alone, not
+        # layered on another repo.
+        if [ -s "$srcs" ] && [ -n "${idx[$STAGING|$arch]}" ]; then
             dose_run dose-builddebcheck --deb-native-arch="$arch" --failures --explain \
-                "${stg[$arch]}" "${DISTRO_INDICES[@]}" "$srcs" > "$work/$arch.builddebcheck" &
+                "${idx[$STAGING|$arch]}" "${DISTRO_INDICES[@]}" "$srcs" > "$work/$arch.builddebcheck" &
             job[$arch.builddebcheck]=$!
         fi
     done
@@ -194,7 +219,7 @@ show_reasons() {
 report_repo() {
     local r="$1"
     case "${R_STATE[$r]}" in
-        unpublished) msg "[$(cpkg "$r")] not in $STAGING — $C_DIM skipping$C_RESET" ;;
+        unpublished) msg "[$(cpkg "$r")] not in $CHECKED — $C_DIM skipping$C_RESET" ;;
         ok)          msg "[$(cpkg "$r")] $(cvers "${R_VER[$r]}") ${C_OK}installable$C_RESET" ;;
         broken|blocked)
             msg "[$(cpkg "$r")] $(cvers "${R_VER[$r]}") ${C_ERR}uninstallable$C_RESET: ${R_PKGS[$r]}"
@@ -261,7 +286,7 @@ for line in "${BUILD_STEPS[@]}"; do
     for r in "${todo[@]}"; do
         in_repo "$r" git fetch -q origin
         if in_repo "$r" newer_than_published "$branch" "${R_VER[$r]}"; then
-            msg "[$(cpkg "$r")] $branch already has a version newer than $STAGING's; rebuilding it without a new bump"
+            msg "[$(cpkg "$r")] $branch already has a version newer than $CHECKED's; rebuilding it without a new bump"
         else
             msg "[$(cpkg "$r")] rebuild bump on $branch ..."
             SP_NO_PUSH_HINT=1 "$SP_ROOT/deb-rebuild" "$r" --only "$branch" -m "$message"
@@ -292,13 +317,13 @@ done
 msg ""
 if [ "$check" = 1 ]; then
     if [ "${#rebuildable[@]}" -eq 0 ] && [ "${#blocked[@]}" -eq 0 ]; then
-        msg "${C_OK}Everything of ours in $STAGING for $branch is installable.${C_RESET}"
+        msg "${C_OK}Everything of ours in $CHECKED for $branch is installable.${C_RESET}"
         exit 0
     fi
     [ "${#rebuildable[@]}" -eq 0 ] || msg "Rebuild would fix:   $(cpkg "${rebuildable[*]}")"
     [ "${#blocked[@]}" -eq 0 ]     || msg "Rebuild can't fix:   $(cpkg "${blocked[*]}")"
     msg "Rebuilding earlier steps can also fix later repos, which this check can't foresee."
-    msg "Rebuild with:  ./deb-rebuild-broken $branch"
+    msg "Rebuild with:  ./deb-rebuild-broken $branch${BASE:+ --beta}"
     exit 1
 fi
 msg "${C_OK}Rebuilt:${C_RESET} $(cpkg "${rebuilt[*]:-(none)}")"
