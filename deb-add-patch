@@ -115,6 +115,7 @@ else
     # intact); --no-bump leaves the version untouched entirely.
     if [ "${#only_globs[@]}" -gt 0 ]; then
         [ "$NOBUMP" = 1 ] || PARTIAL=1
+        ONLY=1
         TARGET="$(only_target)"
     fi
 

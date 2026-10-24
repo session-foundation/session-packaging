@@ -670,6 +670,7 @@ save_state() {
         printf 'current_phase=%s\n'  "$(_sq "${2:-}")"
         printf 'target=%s\n'         "$(_sq "${TARGET:-}")"
         printf 'partial=%s\n'        "$(_sq "${PARTIAL:-0}")"
+        printf 'only=%s\n'           "$(_sq "${ONLY:-0}")"
         printf 'missing=%s\n'        "$(_sq "${MISSING[*]:-}")"
         printf 'ubuntu_base=%s\n'    "$(_sq "${UBUNTU_BASE:-}")"
         printf 'nobump=%s\n'         "$(_sq "${NOBUMP:-0}")"
@@ -711,6 +712,7 @@ begin_or_resume() {
     COMMITS=()
     TARGET=""
     PARTIAL=0
+    ONLY=0
     MISSING=()
     UBUNTU_BASE=""
     NOBUMP=0
@@ -720,7 +722,7 @@ begin_or_resume() {
 
     local operation='' version_base='' source_ref='' commit_msg='' \
           commits='' completed='' current_branch='' current_phase='' \
-          target='' partial='' missing='' ubuntu_base='' nobump='' \
+          target='' partial='' only='' missing='' ubuntu_base='' nobump='' \
           phase_ref='' phase_head=''
     # shellcheck disable=SC1090
     source "$STATE_FILE"
@@ -738,6 +740,7 @@ Resume it by re-running its command, or abandon it with:
     CURRENT_PHASE="$current_phase"
     TARGET="$target"
     PARTIAL="${partial:-0}"
+    ONLY="${only:-0}"
     UBUNTU_BASE="$ubuntu_base"
     NOBUMP="${nobump:-0}"
     PHASE_REF="$phase_ref"
@@ -809,6 +812,11 @@ run_multibranch() {
         save_state "" ""
     done
     clear_state
+    # A run across every branch ends back on debian/sid, where new packaging work
+    # usually starts; an --only run stays on the last branch it worked on.
+    if [ "${ONLY:-0}" != 1 ] && in_list debian/sid "${distros[*]}" && branch_exists debian/sid; then
+        git checkout -q debian/sid
+    fi
 }
 
 # On resume, verify the human actually finished the conflicted git operation.

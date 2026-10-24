@@ -73,6 +73,10 @@ pulls its dependencies from is set by `repo_suffix` in that branch's CI config.
 
 All are run from this directory; the first argument is always the checkout dir.
 None of them push (except `deb-push`); each prints the push command to run next.
+The tools that work through every distro branch (`deb-version-bump`,
+`deb-add-patch`, `deb-rebuild`, `deb-pkg-update`) leave the checkout on
+`debian/sid` when they finish, since that's where new packaging work starts; an
+`--only` run stays on the last branch it worked on.
 
 Anywhere a branch or `--only`/glob is expected, a **bare codename** works as
 shorthand for its full branch: `sid` → `debian/sid`, `noble` → `ubuntu/noble`,

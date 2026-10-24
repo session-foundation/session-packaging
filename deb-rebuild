@@ -51,6 +51,7 @@ if [ "$RESUMING" = 0 ]; then
     # --only: restrict to matching branches and use a +M bump (leaves -N intact).
     if [ "${#only_globs[@]}" -gt 0 ]; then
         PARTIAL=1
+        ONLY=1
         hits=""
         for g in "${only_globs[@]}"; do
             m=""
