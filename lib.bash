@@ -1292,7 +1292,7 @@ push_and_watch() {
         MON_ITEMS+=("$r|$(in_repo "$r" origin_slug)|$branch|${sha[$r]}|${restart[$r]}")
     done
     MON_POLL="${DEB_CASCADE_POLL:-4}"
-    monitor_ci
+    monitor_ci "$branch"
 }
 
 # The barrier between cascade steps: tell the user to upload <branch>'s packages
@@ -1401,6 +1401,9 @@ ci_terminal() {
 # terminal tag when done, with an OSC-8 link to the build). Shared by deb-cascade
 # (one item per repo) and deb-push (one item per pushed branch).
 #
+# Usage: monitor_ci [<what>] — <what> names the watched set in the header (the
+# repo, for single-repo tools, so concurrent runs can be told apart).
+#
 # Input:  MON_ITEMS — each entry "label|slug|branch|sha|restart[|old]". <restart>
 #                     says which stale build (one *already* finished when first
 #                     seen) is restarted, once: "failed" restarts one that didn't
@@ -1437,7 +1440,7 @@ monitor_ci() {
     done
     local all_done detail ov tags sline bpad blink cand lf
     local -a lines
-    msg "Watching CI (every ${poll}s)..."
+    msg "Watching ${1:+$(cpkg "$1") }CI (every ${poll}s)..."
     while :; do
         all_done=1; lines=()
         for ((i = 0; i < n; i++)); do

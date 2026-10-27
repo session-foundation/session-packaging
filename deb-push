@@ -103,6 +103,6 @@ for b in "${selected[@]}"; do
     MON_ITEMS+=("$b|$slug|$b|$(git rev-parse "$b")|none")
 done
 msg "${C_DIM}(Ctrl-C to stop watching; re-run this deb-push to resume)${C_RESET}"
-monitor_ci
+monitor_ci "$REPO"
 [ "${#MON_FAILED[@]}" -eq 0 ] || die "CI failed for: $(cpkg "${MON_FAILED[*]}")"
 msg "${C_OK}All CI builds passed.${C_RESET}"

@@ -64,7 +64,7 @@ done
 [ "${#MON_ITEMS[@]}" -gt 0 ] || die "nothing was restarted"
 
 msg "${C_DIM}(Ctrl-C to stop watching; restarted builds keep running; re-run deb-push to resume watching)${C_RESET}"
-monitor_ci
+monitor_ci "$REPO"
 [ "${#MON_FAILED[@]}" -eq 0 ] || die "CI failed for: $(cpkg "${MON_FAILED[*]}")"
 [ "$fail" = 0 ] || die "some branches couldn't be restarted (see above)"
 msg "${C_OK}All CI builds passed.${C_RESET}"
